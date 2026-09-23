@@ -1,11 +1,19 @@
 --- a/scripts/run_v9_2_dynamic_sharded_eight_source_eval.sh
 +++ b/scripts/run_v9_2_dynamic_sharded_eight_source_eval.sh
-@@
+@@ -4,7 +4,9 @@
+ PROJECT_ROOT="${PROJECT_ROOT:-/home/bedicloud/sharestore2/al/v9}"
+ PYTHON="${PYTHON:-/home/bedicloud/sharestore2/al/conda-envs/al/bin/python}"
  CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_ROOT}/output/v9_2_lesion_precision_scope_e60_20260909_retry2/20260909_023144}"
 +INFER_MODULE="${INFER_MODULE:-infer.infer_eight_source_adaptive_v9_2}"
 +UNIFORM_WEIGHT="${UNIFORM_WEIGHT:-}"
  TASK_MANIFEST="${TASK_MANIFEST:-${PROJECT_ROOT}/configs/nninteractive_eight_source_independent_validation_v1.json}"
-@@
+ NNINTERACTIVE_METRICS="${NNINTERACTIVE_METRICS:-/home/bedicloud/sharestore2/al/nninteractive_test_amos/output/eight_source_adaptive_independent_20260916/merged/metrics.json}"
+ PROMPT_CACHE_ROOT="${PROMPT_CACHE_ROOT:-${PROJECT_ROOT}/v10/.cache/totalseg_sam2_promptgen_v10_prompt_roi_full_v1}"
+@@ -15,5 +17,13 @@
+ MIN_FREE_MIB="${MIN_FREE_MIB:-20000}"
+ FORCE_GPU="${FORCE_GPU:-}"
+ GPU_ALLOWLIST="${GPU_ALLOWLIST:-}"
+ ALLOW_OCCUPIED_FORCE_GPU="${ALLOW_OCCUPIED_FORCE_GPU:-0}"
  GPU_LOCK_ROOT="${GPU_LOCK_ROOT:-/tmp/codex_eight_source_eval_gpu_locks}"
 +TOTALSEG_SHARDS="${TOTALSEG_SHARDS:-4}"
 +AMOS_SHARDS="${AMOS_SHARDS:-2}"
@@ -15,7 +23,7 @@
 +MSD_TASK08_SHARDS="${MSD_TASK08_SHARDS:-1}"
 +PARSE2022_SHARDS="${PARSE2022_SHARDS:-1}"
 +TOPCOW2024_CTA_SHARDS="${TOPCOW2024_CTA_SHARDS:-2}"
-@@
+@@ -35,7 +45,9 @@
  declare -A SHARD_COUNTS=(
 -  [totalseg]=4 [amos]=2 [magic]=1 [msd_task07]=1
 -  [msd_task10]=1 [msd_task08]=1 [parse2022]=1 [topcow2024_cta]=2
@@ -24,16 +32,24 @@
 +  [msd_task10]="${MSD_TASK10_SHARDS}" [msd_task08]="${MSD_TASK08_SHARDS}"
 +  [parse2022]="${PARSE2022_SHARDS}" [topcow2024_cta]="${TOPCOW2024_CTA_SHARDS}"
  )
-@@
  declare -a SOURCES=(
-@@
+   totalseg amos magic msd_task07 msd_task10 msd_task08 parse2022 topcow2024_cta
  )
-+
+@@ -43,1 +55,7 @@
 +if [[ -n "${UNIFORM_WEIGHT}" ]]; then
 +  for source in "${SOURCES[@]}"; do
 +    WEIGHTS[${source}]="${UNIFORM_WEIGHT}"
 +  done
 +fi
-@@
++
+ if [[ "${EXACT_BACKGROUND_MODE}" != "point" && "${EXACT_BACKGROUND_MODE}" != "scribble" ]]; then
+   echo "EXACT_BACKGROUND_MODE must be point or scribble" >&2
+@@ -142,7 +161,7 @@
+   CUDA_VISIBLE_DEVICES="${gpu}" \
+   V9_SHARED_CACHE_WRITE_POLICY=read_only \
+   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 -  "${PYTHON}" -u -m infer.infer_eight_source_adaptive_v9_2 \
 +  "${PYTHON}" -u -m "${INFER_MODULE}" \
+     --data-root "${PROJECT_ROOT}/../../totalsegmentor" \
+     --labels-root "${PROJECT_ROOT}/../../totalsegmentor" \
+     --totalseg-meta-csv "${PROJECT_ROOT}/../../totalsegmentor/meta.csv" \
