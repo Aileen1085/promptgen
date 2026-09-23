@@ -1,0 +1,39 @@
+--- a/scripts/run_v9_2_dynamic_sharded_eight_source_eval.sh
++++ b/scripts/run_v9_2_dynamic_sharded_eight_source_eval.sh
+@@
+ CHECKPOINT_DIR="${CHECKPOINT_DIR:-${PROJECT_ROOT}/output/v9_2_lesion_precision_scope_e60_20260909_retry2/20260909_023144}"
++INFER_MODULE="${INFER_MODULE:-infer.infer_eight_source_adaptive_v9_2}"
++UNIFORM_WEIGHT="${UNIFORM_WEIGHT:-}"
+ TASK_MANIFEST="${TASK_MANIFEST:-${PROJECT_ROOT}/configs/nninteractive_eight_source_independent_validation_v1.json}"
+@@
+ GPU_LOCK_ROOT="${GPU_LOCK_ROOT:-/tmp/codex_eight_source_eval_gpu_locks}"
++TOTALSEG_SHARDS="${TOTALSEG_SHARDS:-4}"
++AMOS_SHARDS="${AMOS_SHARDS:-2}"
++MAGIC_SHARDS="${MAGIC_SHARDS:-1}"
++MSD_TASK07_SHARDS="${MSD_TASK07_SHARDS:-1}"
++MSD_TASK10_SHARDS="${MSD_TASK10_SHARDS:-1}"
++MSD_TASK08_SHARDS="${MSD_TASK08_SHARDS:-1}"
++PARSE2022_SHARDS="${PARSE2022_SHARDS:-1}"
++TOPCOW2024_CTA_SHARDS="${TOPCOW2024_CTA_SHARDS:-2}"
+@@
+ declare -A SHARD_COUNTS=(
+-  [totalseg]=4 [amos]=2 [magic]=1 [msd_task07]=1
+-  [msd_task10]=1 [msd_task08]=1 [parse2022]=1 [topcow2024_cta]=2
++  [totalseg]="${TOTALSEG_SHARDS}" [amos]="${AMOS_SHARDS}"
++  [magic]="${MAGIC_SHARDS}" [msd_task07]="${MSD_TASK07_SHARDS}"
++  [msd_task10]="${MSD_TASK10_SHARDS}" [msd_task08]="${MSD_TASK08_SHARDS}"
++  [parse2022]="${PARSE2022_SHARDS}" [topcow2024_cta]="${TOPCOW2024_CTA_SHARDS}"
+ )
+@@
+ declare -a SOURCES=(
+@@
+ )
++
++if [[ -n "${UNIFORM_WEIGHT}" ]]; then
++  for source in "${SOURCES[@]}"; do
++    WEIGHTS[${source}]="${UNIFORM_WEIGHT}"
++  done
++fi
+@@
+-  "${PYTHON}" -u -m infer.infer_eight_source_adaptive_v9_2 \
++  "${PYTHON}" -u -m "${INFER_MODULE}" \
