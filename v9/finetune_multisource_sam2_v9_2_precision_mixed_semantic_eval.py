@@ -13,6 +13,7 @@ import finetune_totalseg_amos_magic_v9_2_precision as precision
 multi = original.multi
 base = original.base
 main = original.main
+_make_source_dataset_adaptive = original._make_source_dataset_adaptive
 _LEGACY_SOURCES = frozenset({"totalseg", "amos"})
 
 
