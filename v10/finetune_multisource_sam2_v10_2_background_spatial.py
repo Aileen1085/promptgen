@@ -4,6 +4,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+from pathlib import Path
+import sys
+
+V10_ROOT = Path(__file__).resolve().parent
+V9_ROOT = V10_ROOT.parent
+for root in (V10_ROOT, V9_ROOT):
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
 
 import torch
 import torch.multiprocessing as mp

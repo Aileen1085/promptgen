@@ -8,6 +8,12 @@ import random
 import sys
 import time
 
+V10_ROOT = Path(__file__).resolve().parent
+V9_ROOT = V10_ROOT.parent
+for root in (V10_ROOT, V9_ROOT):
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
 from v10.v10_2_expert_ablation import (
     assert_eval_args,
     assert_fixed_validation,
