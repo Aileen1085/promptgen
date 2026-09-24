@@ -235,26 +235,34 @@ def physical_distance_features(
     prompt = F.adaptive_max_pool2d(prompt, output_hw)
     foreground = (prompt[:, 0] > 0).cpu().numpy()
     background = (prompt[:, 1] > 0).cpu().numpy()
-    if not bool(foreground.any()):
-        raise ValueError("foreground prompt is empty")
 
     feature_spacing = (
         float(spacing_dhw[0]),
         float(spacing_dhw[1]) * float(source_hw[0]) / float(output_hw[0]),
         float(spacing_dhw[2]) * float(source_hw[1]) / float(output_hw[1]),
     )
-    foreground_distance = _distance_mm(foreground, feature_spacing)
-    foreground_proximity = np.exp(
-        -np.minimum(foreground_distance, clip) / clip
-    ).astype(np.float32, copy=False)
+    foreground_present = bool(foreground.any())
+    if foreground_present:
+        foreground_distance = _distance_mm(foreground, feature_spacing)
+        foreground_proximity = np.exp(
+            -np.minimum(foreground_distance, clip) / clip
+        ).astype(np.float32, copy=False)
+    else:
+        foreground_distance = np.full(foreground.shape, clip, dtype=np.float32)
+        foreground_proximity = np.zeros(foreground.shape, dtype=np.float32)
     if bool(background.any()):
         background_distance = _distance_mm(background, feature_spacing)
         background_proximity = np.exp(
             -np.minimum(background_distance, clip) / clip
         ).astype(np.float32, copy=False)
-        signed_contrast = np.tanh(
-            (background_distance - foreground_distance) / clip
-        ).astype(np.float32, copy=False)
+        if foreground_present:
+            signed_contrast = np.tanh(
+                (background_distance - foreground_distance) / clip
+            ).astype(np.float32, copy=False)
+        else:
+            signed_contrast = np.tanh(
+                (np.minimum(background_distance, clip) - clip) / clip
+            ).astype(np.float32, copy=False)
         background_presence = np.ones_like(foreground_proximity, dtype=np.float32)
     else:
         background_proximity = np.zeros_like(foreground_proximity, dtype=np.float32)
