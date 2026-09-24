@@ -35,6 +35,7 @@ def main() -> None:
     from v10_2_background_spatial import (
         CrossViewPromptTokenGeneratorV102BackgroundSpatial,
         PhysicalSpacingDataset,
+        bind_physical_spacing_source_factory,
         generate_case_3d_tokens_with_physical_spacing,
     )
     from utils.distributed_runtime import parse_gpu_ids
@@ -70,17 +71,7 @@ def main() -> None:
     joint.v101._validate_extension_args(args)
     joint._prepare_protocol(args)
     joint._bind_v10_2(args)
-    base_factory = joint.v101.make_dataset_v10_1
-
-    def spatial_factory(*factory_args, **factory_kwargs):
-        dataset = base_factory(*factory_args, **factory_kwargs)
-        return (
-            dataset
-            if isinstance(dataset, PhysicalSpacingDataset)
-            else PhysicalSpacingDataset(dataset)
-        )
-
-    joint.v101.make_dataset_v10_1 = spatial_factory
+    bind_physical_spacing_source_factory(joint)
     base_generate = joint.v10_memory.generate_case_3d_tokens
 
     def spatial_generate(prompt_gen, adapter, video_cpu, bundle_cpu, class_id, bound_args, device):

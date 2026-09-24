@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import importlib
 from typing import Sequence
 
 import numpy as np
@@ -133,6 +134,28 @@ class PhysicalSpacingDataset:
         return self._attach(
             index, self.dataset.get_item_for_class(index, class_id)
         )
+
+
+def bind_physical_spacing_source_factory(owner_module):
+    """Wrap every v10.2 source dataset, including non-TotalSeg sources."""
+
+    owner_factory = owner_module.make_source_dataset
+    if bool(getattr(owner_factory, "_v10_2_physical_spacing_bound", False)):
+        return owner_factory
+    data_module = importlib.import_module(owner_factory.__module__)
+    original_factory = data_module.make_source_dataset
+
+    def spatial_source_factory(*factory_args, **factory_kwargs):
+        dataset = original_factory(*factory_args, **factory_kwargs)
+        if isinstance(dataset, PhysicalSpacingDataset):
+            return dataset
+        return PhysicalSpacingDataset(dataset)
+
+    spatial_source_factory._v10_2_physical_spacing_bound = True
+    spatial_source_factory._v10_2_physical_spacing_original = original_factory
+    data_module.make_source_dataset = spatial_source_factory
+    owner_module.make_source_dataset = spatial_source_factory
+    return spatial_source_factory
 
 
 def generate_case_3d_tokens_with_physical_spacing(

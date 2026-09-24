@@ -21,6 +21,7 @@ from v10.v10_2_background_spatial import (
     CrossViewPromptTokenGeneratorV102BackgroundSpatial,
     PhysicalSpacingDataset,
     background_hard_negative_loss,
+    bind_physical_spacing_source_factory,
     configure_phase1_prompt_trainability,
     generate_case_3d_tokens_with_physical_spacing,
     physical_distance_features,
@@ -162,15 +163,7 @@ class BackgroundSpatialTrainingStep(v102.v101.v10.DDPTrainingStepV10):
 
 def _bind_background_spatial(args) -> None:
     v102._bind_v10_2(args)
-    base_factory = v102.v101.make_dataset_v10_1
-
-    def spatial_factory(*factory_args, **factory_kwargs):
-        dataset = base_factory(*factory_args, **factory_kwargs)
-        if isinstance(dataset, PhysicalSpacingDataset):
-            return dataset
-        return PhysicalSpacingDataset(dataset)
-
-    v102.v101.make_dataset_v10_1 = spatial_factory
+    bind_physical_spacing_source_factory(v102)
     base_generate = v102.v10_memory.generate_case_3d_tokens
 
     def spatial_generate(prompt_gen, adapter, video_cpu, bundle_cpu, class_id, bound_args, device):
