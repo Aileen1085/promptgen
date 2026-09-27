@@ -59,6 +59,11 @@ def build_badcase_record(task, full_metrics, roi_spatial, *, seed):
     }
 
 
+def select_validation_decoder(ordinary_decode, grouped_decode):
+    """Match the controlled experiment's grouped evaluation decoder."""
+    return grouped_decode
+
+
 def main():
     import nibabel as nib
     import numpy as np
@@ -71,6 +76,7 @@ def main():
         load_sam_tuning_from_checkpoint,
     )
     from v10_2_spatial_diagnostic import spatial_summary_for_roi
+    from v10_3_memory_runtime import memory_grouped_decode_v103
     from v10.v10_2_expert_ablation import save_json_once, sha256_file
     from utils.distributed_runtime import parse_gpu_ids
 
@@ -167,7 +173,11 @@ def main():
                 tokens, anchor = joint.v10_memory.generate_case_3d_tokens(
                     prompt, adapter, video, bundle, class_id, args, device,
                 )
-                logits, _ = joint.v10_memory.memory_sliding_window_decode(
+                decode = select_validation_decoder(
+                    joint.v10_memory.memory_sliding_window_decode,
+                    memory_grouped_decode_v103,
+                )
+                logits, _ = decode(
                     adapter, video, bundle, tokens, anchor, args, device,
                     training=False,
                 )
