@@ -1,0 +1,26 @@
+diff --git a/v9_training_core.py b/v9_training_core.py
+--- a/v9_training_core.py
++++ b/v9_training_core.py
+@@ -2013,6 +2013,11 @@
+     expected_parameter_ids = {
+         id(parameter) for parameter in list(prompt_gen.parameters()) + list(decoder.parameters())
+         if parameter.requires_grad
+     }
++    if getattr(args, "full_finetune_image_encoder", False):
++        expected_parameter_ids.update(
++            id(parameter) for parameter in adapter.sam.image_encoder.parameters()
++            if parameter.requires_grad
++        )
+     if optimizer_parameter_ids != expected_parameter_ids:
+         raise RuntimeError("Optimizer parameter groups no longer match trainable prompt/decoder parameters")
+@@ -2414,6 +2419,10 @@
+         incompatible = prompt_gen.load_state_dict(state["prompt_generator"], strict=False)
+         if "sam2_mask_decoder" in state:
+             adapter.sam.sam_mask_decoder.load_state_dict(state["sam2_mask_decoder"])
++        if getattr(args, "full_finetune_image_encoder", False):
++            if "sam2_image_encoder" not in state:
++                raise RuntimeError("Full-fine-tune best checkpoint is missing sam2_image_encoder")
++            adapter.sam.image_encoder.load_state_dict(state["sam2_image_encoder"], strict=True)
+         if incompatible.missing_keys or incompatible.unexpected_keys:
+             logging.info(
+                 "Loaded best checkpoint with non-strict state: missing=%s unexpected=%s",
