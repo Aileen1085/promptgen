@@ -36,6 +36,16 @@ class PolicyTests(unittest.TestCase):
         self.assertAlmostEqual(result['mean']['dice'], .6)
         self.assertAlmostEqual(result['mean']['precision'], .5)
 
+    def test_macro_uses_metric_specific_finite_counts(self):
+        from ct13_validation_policy import case_class_macro
+        sources = {'a': {'per_prompt_mode': {'s': {'count': 2, 'dice': .8, 'nsd': .4,
+                                                     'metric_counts': {'dice': 2, 'nsd': 1}}}},
+                   'b': {'per_prompt_mode': {'s': {'count': 1, 'dice': .2, 'nsd': .8,
+                                                     'metric_counts': {'dice': 1, 'nsd': 1}}}}}
+        result = case_class_macro(sources)
+        self.assertEqual(result['metric_counts']['nsd'], 2)
+        self.assertAlmostEqual(result['mean']['nsd'], .6)
+
 
 if __name__ == '__main__':
     unittest.main()
