@@ -18,8 +18,10 @@ from torch.utils.checkpoint import checkpoint
 
 import finetune_multisource_sam2_v9_2_ddp as ddp
 from v9_2_full_finetune_policy import select_encoder_parameter_names
+from v9_2_full_plateau import ValidationPlateauScheduler
 
 
+multi = ddp.multi  # Let the shared-cache launcher wrap every source dataset.
 base = ddp.base
 v9_joint = ddp.legacy.multi92.v92.v91.v9
 v92_joint = ddp.legacy.multi92.v92
@@ -29,8 +31,10 @@ _BASE_GROUPS = base.build_optimizer_groups
 _BASE_PROMPT_LOAD = base.load_prompt_generator_checkpoint
 _BASE_RESUME_LOAD = v92_joint._BASE_LOAD_RESUME
 _BASE_EVALUATE = base.evaluate
+_BASE_SCHEDULER = base.CosineAnnealingLR
 _ADAPTER = None
 _OPTIONS = None
+_ACTIVE_SCHEDULER = None
 
 
 def _parse_full_args():
@@ -40,6 +44,9 @@ def _parse_full_args():
     extension.add_argument("--full-ft-encoder-lr", type=float, default=2e-7)
     extension.add_argument("--full-ft-encoder-early-lr", type=float, default=5e-8)
     extension.add_argument("--full-ft-activation-checkpoint", action=argparse.BooleanOptionalAction, default=True)
+    extension.add_argument("--full-ft-lr-schedule", choices=("cosine", "plateau"), default="cosine")
+    extension.add_argument("--full-ft-plateau-factor", type=float, default=0.5)
+    extension.add_argument("--full-ft-plateau-threshold", type=float, default=1e-4)
     options, remaining = extension.parse_known_args(sys.argv[1:])
     old_argv = sys.argv
     try:
@@ -57,6 +64,10 @@ def _parse_full_args():
         raise ValueError("Encoder learning rates must be positive")
     if options.full_ft_encoder_early_lr > options.full_ft_encoder_lr:
         raise ValueError("Early Hiera layers must not have a higher LR than late layers")
+    if not 0.0 < options.full_ft_plateau_factor < 1.0:
+        raise ValueError("Plateau LR factor must be in (0, 1)")
+    if options.full_ft_plateau_threshold < 0.0:
+        raise ValueError("Plateau score threshold must be nonnegative")
     if args.resume_checkpoint and not args.resume_run_dir:
         raise ValueError("Resume requires --resume-run-dir to keep the checkpoint series together")
     args.full_finetune_image_encoder = True
@@ -64,6 +75,9 @@ def _parse_full_args():
     args.full_ft_encoder_lr = options.full_ft_encoder_lr
     args.full_ft_encoder_early_lr = options.full_ft_encoder_early_lr
     args.full_ft_activation_checkpoint = options.full_ft_activation_checkpoint
+    args.full_ft_lr_schedule = options.full_ft_lr_schedule
+    args.full_ft_plateau_factor = options.full_ft_plateau_factor
+    args.full_ft_plateau_threshold = options.full_ft_plateau_threshold
     _OPTIONS = options
     return args
 
@@ -136,6 +150,25 @@ def _groups_with_encoder(prompt_gen, decoder, args):
     return groups
 
 
+def _make_full_scheduler(optimizer, T_max, eta_min):
+    global _ACTIVE_SCHEDULER
+    if _OPTIONS.full_ft_lr_schedule == "cosine":
+        _ACTIVE_SCHEDULER = None
+        return _BASE_SCHEDULER(optimizer, T_max=T_max, eta_min=eta_min)
+    scheduler = ValidationPlateauScheduler(
+        optimizer,
+        eta_min=eta_min,
+        factor=_OPTIONS.full_ft_plateau_factor,
+        threshold=_OPTIONS.full_ft_plateau_threshold,
+    )
+    _ACTIVE_SCHEDULER = scheduler
+    logging.info(
+        "Validation plateau LR enabled | factor=%.3f threshold=%.6g min_lr=%.7g",
+        scheduler.factor, scheduler.threshold, scheduler.eta_min,
+    )
+    return scheduler
+
+
 class FullJointForward(ddp.DistributedJointForward):
     def __init__(self, prompt_gen, adapter):
         super().__init__(prompt_gen, adapter)
@@ -182,6 +215,9 @@ def _resume_full_checkpoint(path, prompt_gen, adapter, optimizer, scheduler, fre
         path, prompt_gen, adapter, optimizer, scheduler, freeze_decoder=freeze_decoder
     )
     adapter.sam.image_encoder.load_state_dict(state["sam2_image_encoder"], strict=True)
+    if isinstance(scheduler, ValidationPlateauScheduler) and scheduler.transferred_from_cosine:
+        scheduler.set_baseline(result["best_val"])
+        logging.info("Transferred cosine checkpoint to validation plateau LR | baseline=%.6f", scheduler.best)
     return result
 
 
@@ -208,7 +244,16 @@ def _evaluate_with_encoder_mode(prompt_gen, adapter, *args, **kwargs):
     was_training = encoder.training
     encoder.eval()
     try:
-        return _BASE_EVALUATE(prompt_gen, adapter, *args, **kwargs)
+        result = _BASE_EVALUATE(prompt_gen, adapter, *args, **kwargs)
+        if _ACTIVE_SCHEDULER is not None and result[0] is not None:
+            old_rates = _ACTIVE_SCHEDULER.get_last_lr()
+            reduced = _ACTIVE_SCHEDULER.observe(result[0])
+            logging.info(
+                "Validation plateau LR | score=%.6f best=%.6f reduced=%s old=%s new=%s",
+                float(result[0]), _ACTIVE_SCHEDULER.best, reduced,
+                old_rates, _ACTIVE_SCHEDULER.get_last_lr(),
+            )
+        return result
     finally:
         encoder.train(was_training)
 
@@ -220,6 +265,7 @@ def _install():
     base.JointTrainingForward = FullJointForward
     base.load_prompt_generator_checkpoint = _load_full_warm_start
     base.evaluate = _evaluate_with_encoder_mode
+    base.CosineAnnealingLR = _make_full_scheduler
     v9_joint._original_save_ckpt = _save_full_checkpoint
     v92_joint._BASE_LOAD_RESUME = _resume_full_checkpoint
     base.SAM2MedicalAdapter.encode_image_features = _encode_image_features_with_grad
