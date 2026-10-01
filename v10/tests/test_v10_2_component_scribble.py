@@ -8,6 +8,7 @@ from utils.prompt_utils import select_scribble_plane_slices
 from v10_2_component_scribble import select_component_plane_slices
 from v10_2_component_scribble_ablation import (
     component_cache_namespace,
+    memory_safe_eval_args,
     parse_launcher_args,
     pathology_tasks,
 )
@@ -68,6 +69,15 @@ class PathologyCohortTests(unittest.TestCase):
         command = "exec env CT13_FAMILY=v10_2 /bin/python -u /proj/ct13_training_entry.py --gpu 5 --validation-seed 2027"
         self.assertEqual(parse_launcher_args(command),
                          ["--gpu", "5", "--validation-seed", "2027"])
+
+    def test_memory_safe_eval_changes_only_batching_and_feature_storage(self):
+        options = ["--gpu", "5", "--mask-threshold", "0.60"]
+        result = memory_safe_eval_args(options, gpu=2)
+        self.assertEqual(result[-6:], [
+            "--gpu", "2", "--sam2-frame-batch-size", "8",
+            "--sam2-feature-cache-device", "cpu",
+        ])
+        self.assertEqual(result[:len(options)], options)
 
     def test_component_cache_is_isolated_without_changing_case_ct_root(self):
         class Dataset:

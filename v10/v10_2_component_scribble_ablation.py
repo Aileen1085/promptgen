@@ -69,6 +69,15 @@ def parse_launcher_args(command: str) -> list[str]:
     raise ValueError("launcher does not contain the CT13 entry point")
 
 
+def memory_safe_eval_args(options: list[str], *, gpu: int) -> list[str]:
+    """Keep model/protocol options, changing only evaluation memory scheduling."""
+    return list(options) + [
+        "--gpu", str(gpu),
+        "--sam2-frame-batch-size", "8",
+        "--sam2-feature-cache-device", "cpu",
+    ]
+
+
 def _inner_dataset(dataset):
     current = dataset
     seen = set()
@@ -185,8 +194,7 @@ def main() -> None:
     launch_text = settings.source_launcher.read_text(encoding="utf-8")
     launch_line = next(line for line in launch_text.splitlines() if "ct13_training_entry.py" in line)
     launch_args = parse_launcher_args(launch_line)
-    args = joint.parser().parse_args(launch_args + [
-        "--gpu", str(settings.gpu),
+    args = joint.parser().parse_args(memory_safe_eval_args(launch_args, gpu=settings.gpu) + [
         "--multidataset-validation-json", str(settings.validation_json),
     ])
     args.resume_checkpoint = None
@@ -318,6 +326,8 @@ def main() -> None:
         "validation_sha256": validation_sha,
         "split_sha256": split_sha,
         "gpu_physical": settings.gpu,
+        "eval_frame_batch_size": int(args.sam2_frame_batch_size),
+        "eval_feature_cache_device": str(args.sam2_feature_cache_device),
         "metric_space": "raw_nifti_full_volume",
         "protocol": "fixed pathology tasks; identical checkpoint/seed; baseline versus one coronal and one sagittal plane per 26-connected 3D target",
         "tasks": len(rows),
