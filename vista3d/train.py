@@ -84,6 +84,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--vista-checkpoint", type=Path)
     p.add_argument("--promptgen-checkpoint", type=Path)
     p.add_argument("--feature-bridge-mode", choices=("single", "multiscale"), default="single")
+    p.add_argument("--compare-completed-single", action="store_true",
+                   help="Match the completed single-feature run's adapter initialization and RNG stream")
     p.add_argument("--resume", type=Path, help="Only a vista3d checkpoint, never a v10.2 optimizer")
     p.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent / "output/amos")
     p.add_argument("--device", default="cuda:0")
@@ -163,6 +165,16 @@ def make_paired_feature_modules(mode: str):
     raise ValueError(f"unknown feature bridge mode: {mode}")
 
 
+def make_completed_single_comparable_multiscale_modules():
+    """Preserve the completed single-feature run's adapter and post-init CPU RNG."""
+    VistaFeatureBridge()  # Consume exactly the original bridge initialization.
+    adapter = VistaPromptAdapter()
+    post_adapter_rng = torch.get_rng_state()
+    bridge = VistaMultiScaleFeatureBridge()
+    torch.set_rng_state(post_adapter_rng)
+    return bridge, adapter
+
+
 def _build_model(args):
     if args.depth < 16 or args.depth % 16 or args.vista_hw < 32 or args.vista_hw % 16:
         raise ValueError("VISTA patch depth and XY size must be positive multiples of 16")
@@ -173,7 +185,12 @@ def _build_model(args):
     prompt = load_v102_promptgen(args.promptgen_checkpoint, args.device)
     if int(prompt.work_size) != args.prompt_work_size:
         raise ValueError("--prompt-work-size differs from v10.2 checkpoint construction args")
-    bridge, prompt_adapter = make_paired_feature_modules(args.feature_bridge_mode)
+    if args.compare_completed_single:
+        if args.feature_bridge_mode != "multiscale":
+            raise ValueError("--compare-completed-single requires multiscale bridge mode")
+        bridge, prompt_adapter = make_completed_single_comparable_multiscale_modules()
+    else:
+        bridge, prompt_adapter = make_paired_feature_modules(args.feature_bridge_mode)
     model = VistaPromptGenModel(
         core, prompt, feature_bridge=bridge, prompt_adapter=prompt_adapter,
         feature_bridge_mode=args.feature_bridge_mode,
@@ -312,7 +329,8 @@ def main(argv=None):
         raise FileNotFoundError("--vista-checkpoint must point to the official research weight")
     args.vista_checkpoint_sha256 = file_sha256(args.vista_checkpoint)
     model = _build_model(args)
-    reset_training_random_stream(args.seed)
+    if not args.compare_completed_single:
+        reset_training_random_stream(args.seed)
     if args.resume:
         state = torch.load(args.resume, map_location="cpu", weights_only=True)
         require_matching_feature_mode(state, args.feature_bridge_mode)

@@ -21,6 +21,22 @@ class FakeDataset:
 
 
 class EntryPointTests(unittest.TestCase):
+    def test_completed_single_baseline_adapter_and_random_stream_are_preserved(self):
+        from adapter import VistaFeatureBridge, VistaPromptAdapter, VistaMultiScaleFeatureBridge
+        from train import make_completed_single_comparable_multiscale_modules
+
+        torch.manual_seed(20260928)
+        VistaFeatureBridge()
+        expected_adapter = VistaPromptAdapter()
+        expected_next = torch.rand(3)
+
+        torch.manual_seed(20260928)
+        bridge, adapter = make_completed_single_comparable_multiscale_modules()
+        self.assertIsInstance(bridge, VistaMultiScaleFeatureBridge)
+        for name, value in expected_adapter.state_dict().items():
+            self.assertTrue(torch.equal(value, adapter.state_dict()[name]), name)
+        self.assertTrue(torch.equal(expected_next, torch.rand(3)))
+
     def test_paired_modes_initialize_prompt_adapter_identically(self):
         from adapter import VistaPromptAdapter
         from train import make_paired_feature_modules
