@@ -47,6 +47,6 @@ python vista3d/train.py train --vista-source /path/to/VISTA/vista3d \
 
 原 `VistaFeatureBridge` 从 VISTA decoder 的同一份 48 通道 point feature 投影出 `fpn0`、`fpn1`、`top`，三个名字不代表不同编码层。新增 `--feature-bridge-mode multiscale` 在一次冻结的官方 encoder 前向中取第 2/3/4 层：分别是原生 192 通道、1/4 分辨率；384 通道、1/8 分辨率；768 通道、1/16 分辨率。三个独立 1×1×1 卷积只将通道变成 PromptGen 期望的 32/64/256；各层的 XY 分辨率保留到 PromptGen 自己的融合处，轴向深度才插值对齐到同一帧数。旧 `single` 路径保持可选，checkpoint 带不同 architecture 标签，不能跨模式恢复。
 
-两组均须从同一个 `v10/output/v10_2_ct13_e430_plateau_e510_20260930/20260930_152155/epoch470.pth` 只迁移 PromptGen 模型权重，不能恢复 v10.2 optimizer；使用同一官方 VISTA 权重、AMOS 划分、45 项固定验证、随机种子、3 医学窗、prompt/ROI、loss、96³ patch、stride 48、200 任务/epoch、40 epoch、每 5 轮验证、LR/早停和阈值 0.60。公共 3D prompt adapter 在两组随机种子相同时初始化完全一致；仅 feature bridge 不同。既有 E40 单特征 run 使用的 `best.pth` 与指定 `epoch470.pth` 的 PromptGen 参数不完全相同，因此**不得拿既有 E40 指标作为这次严格对照的单特征组**。
+两组均须从同一个 `v10/output/v10_2_ct13_e430_plateau_e510_20260930/20260930_152155/epoch470.pth` 只迁移 PromptGen 模型权重，不能恢复 v10.2 optimizer；使用同一官方 VISTA 权重、AMOS 划分、45 项固定验证、随机种子、3 医学窗、prompt/ROI、loss、96³ patch、stride 48、200 任务/epoch、40 epoch、每 5 轮验证、LR/早停和阈值 0.60。公共 3D prompt adapter 在两组随机种子相同时初始化完全一致；模型构建后重置 Python、NumPy 与 torch/CUDA 随机流，避免不同 bridge 参数量改变后续 dropout 序列；仅 feature bridge 不同。既有 E40 单特征 run 使用的 `best.pth` 与指定 `epoch470.pth` 的 PromptGen 参数不完全相同，因此**不得拿既有 E40 指标作为这次严格对照的单特征组**。
 
 单特征组与多尺度组分别用独立输出目录，基于同协议验证比较 Dice、IoU、3D NSD@1mm、precision、recall、pred/GT、HD95 和各类别；同时检查显存、吞吐与是否早停。不能只凭训练 loss 或不同协议指标断言多尺度有效。

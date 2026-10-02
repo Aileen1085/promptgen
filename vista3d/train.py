@@ -64,6 +64,15 @@ def require_matching_feature_mode(state: dict, mode: str) -> None:
         raise ValueError("resume checkpoint feature bridge mode differs from requested mode")
 
 
+def reset_training_random_stream(seed: int) -> None:
+    """Do not let different bridge parameter counts shift data/dropout randomness."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("mode", choices=("audit-data", "smoke", "validate", "train"))
@@ -303,6 +312,7 @@ def main(argv=None):
         raise FileNotFoundError("--vista-checkpoint must point to the official research weight")
     args.vista_checkpoint_sha256 = file_sha256(args.vista_checkpoint)
     model = _build_model(args)
+    reset_training_random_stream(args.seed)
     if args.resume:
         state = torch.load(args.resume, map_location="cpu", weights_only=True)
         require_matching_feature_mode(state, args.feature_bridge_mode)

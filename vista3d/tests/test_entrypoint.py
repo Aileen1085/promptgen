@@ -34,6 +34,21 @@ class EntryPointTests(unittest.TestCase):
         for name, value in single_adapter.state_dict().items():
             self.assertTrue(torch.equal(value, multiscale_adapter.state_dict()[name]), name)
 
+    def test_paired_modes_reset_training_random_stream_after_module_init(self):
+        import random
+        import numpy as np
+        from train import make_paired_feature_modules, reset_training_random_stream
+
+        observed = []
+        for mode in ("single", "multiscale"):
+            torch.manual_seed(20260928)
+            make_paired_feature_modules(mode)
+            reset_training_random_stream(20260928)
+            observed.append((torch.rand(3), np.random.rand(3), random.random()))
+        self.assertTrue(torch.equal(observed[0][0], observed[1][0]))
+        np.testing.assert_array_equal(observed[0][1], observed[1][1])
+        self.assertEqual(observed[0][2], observed[1][2])
+
     def test_help_and_amos_only_defaults(self):
         args = train.parser().parse_args(["audit-data"])
         self.assertEqual(args.vista_hw, 96)
