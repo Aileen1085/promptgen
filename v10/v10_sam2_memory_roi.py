@@ -21,6 +21,7 @@ from utils.distributed_runtime import all_gather_flat, context_from_env
 from v10_data import make_dataset, semantic_text_for_class
 from v10_metrics import full_volume_binary_metrics_from_logits
 from v10_2_multidataset_runtime import memory_commit_positions
+from v10_memory_input_grad import prepare_memory_features
 
 
 def _amp(args, device):
@@ -84,7 +85,7 @@ def encode_case_image_views(adapter, video_cpu, args, device, training: bool):
                     sam.forward_image,
                     images,
                     use_reentrant=False,
-                    preserve_rng_state=False,
+                    preserve_rng_state=True,
                 )
             else:
                 backbone = sam.forward_image(images)
@@ -426,8 +427,9 @@ def memory_sliding_window_decode(
             value.permute(1, 2, 0).view(1, value.size(2), *size)
             for value, size in zip(frame_vision[:-1], sizes[:-1])
         ] if len(frame_vision) > 1 else None
-        with torch.no_grad(), _amp(args, device):
-            pix_feat = sam._prepare_memory_conditioned_features(
+        with _amp(args, device):
+            pix_feat = prepare_memory_features(
+                sam, training=bool(training),
                 frame_idx=int(frame_idx), is_init_cond_frame=bool(init),
                 current_vision_feats=frame_vision[-1:],
                 current_vision_pos_embeds=frame_position[-1:],
