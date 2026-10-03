@@ -348,6 +348,8 @@ def parser():
                    help="First epoch that updates the configured SAM image-encoder parameters.")
     p.add_argument("--lr-warmup-epochs",type=int,default=0,
                    help="Linear optimizer learning-rate warmup length; 0 disables warmup.")
+    p.add_argument("--lr-schedule-epochs",type=int,default=0,
+                   help="Optional original LR schedule horizon for a shorter control run; 0 uses epochs.")
     p.add_argument("--lr-cosine-min-ratio",type=float,default=1.0,
                    help="Final cosine learning-rate ratio; 1 preserves constant learning rates.")
     p.add_argument("--plateau-early-stop-patience",type=int,default=0,
@@ -359,6 +361,8 @@ def parser():
                    help="Lower bound as a fraction of each resumed group's initial LR.")
     p.add_argument("--plateau-min-delta",type=float,default=0.001,
                    help="Minimum absolute weighted-Dice improvement that resets patience.")
+    p.add_argument("--plateau-reset-on-resume",action="store_true",
+                   help="Rebase plateau best to checkpoint best and clear old patience counters; preserve optimizer/LR history.")
     p.add_argument(
         "--train-memory-group-size", type=int, default=1,
         help=("Decode every frame with its own prompt, but update the SAM2 memory bank "
@@ -733,7 +737,12 @@ def worker(rank,world,port,stamp,args):
     plateau=None
     if args.plateau_early_stop_patience:
         plateau_state=checkpoint_state.get("plateau_state") if args.resume_checkpoint else None
-        plateau=(ValidationPlateau.from_state_dict(plateau_state) if plateau_state is not None
+        if args.plateau_reset_on_resume and plateau_state is None:
+            raise ValueError("--plateau-reset-on-resume requires a resume checkpoint with plateau_state")
+        plateau=(ValidationPlateau.restart_with_current_best(
+                     plateau_state,best=best,min_delta=args.plateau_min_delta)
+                 if args.plateau_reset_on_resume else
+                 ValidationPlateau.from_state_dict(plateau_state) if plateau_state is not None
                  else ValidationPlateau(
                      best=best,min_delta=args.plateau_min_delta,
                      lr_patience=args.plateau_lr_patience,
@@ -745,7 +754,7 @@ def worker(rank,world,port,stamp,args):
             logging.info("Validation plateau control: %s",plateau.state_dict())
     for epoch in range(start_epoch,args.epochs+1):
         learning_rates=apply_staged_learning_rates(
-            opt,epoch=epoch,total_epochs=args.epochs,
+            opt,epoch=epoch,total_epochs=int(getattr(args,"lr_schedule_epochs",0) or args.epochs),
             warmup_epochs=args.lr_warmup_epochs,
             cosine_min_ratio=args.lr_cosine_min_ratio,
             encoder_unfreeze_epoch=args.sam_encoder_unfreeze_epoch,
