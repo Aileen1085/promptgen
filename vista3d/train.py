@@ -87,6 +87,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--compare-completed-single", action="store_true",
                    help="Match the completed single-feature run's adapter initialization and RNG stream")
     p.add_argument("--resume", type=Path, help="Only a vista3d checkpoint, never a v10.2 optimizer")
+    p.add_argument("--reset-training-control", action="store_true",
+                   help="Explicitly reset only LR/early-stop policy and counters; retain best Dice and optimizer")
     p.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent / "output/amos")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--epochs", type=int, default=40)
@@ -306,6 +308,8 @@ def main(argv=None):
     args = parser().parse_args(argv)
     if args.mode == "validate" and args.resume is None:
         raise ValueError("validate requires --resume with a trained VISTA3D adapter checkpoint")
+    if args.reset_training_control and args.resume is None:
+        raise ValueError("--reset-training-control requires --resume")
     if args.epochs < 1 or args.train_tasks_per_epoch < 1 or args.validate_every < 1:
         raise ValueError("epoch/task/validation settings must be positive")
     if not (0.0 < args.threshold < 1.0):
@@ -358,11 +362,15 @@ def main(argv=None):
     if args.resume:
         optimizer.load_state_dict(state["optimizer"])
         start_epoch = int(state["epoch"]) + 1
-        control = ValidationController.from_checkpoint(state, **control_settings)
+        control = ValidationController.from_checkpoint(
+            state, reset_policy=args.reset_training_control, **control_settings)
     else:
         control = ValidationController(
             best_dice=-1.0, significant_best_dice=-1.0, **control_settings
         )
+    print(json.dumps({"start_epoch": start_epoch,
+                      "optimizer_lrs": [group["lr"] for group in optimizer.param_groups],
+                      "training_control": control.state_dict()}, indent=2), flush=True)
     tasks = [(index, class_id) for index, case in enumerate(protocol.train) for class_id in case.classes]
     if not tasks:
         raise ValueError("AMOS CT train split has no nonempty class task")
