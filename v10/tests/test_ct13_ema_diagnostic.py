@@ -25,6 +25,18 @@ def metrics():
 
 
 class DiagnosticTest(unittest.TestCase):
+    def test_checkpoint_guard_rejects_ema_saved_epoch_files(self):
+        path = Path('v10/output/v10_2_ct13_e490_lowpg_lr_control_10_20261004/20261004_121030/last.pth')
+        state = {'epoch': 10, 'ema_state': {'num_updates': 2000},
+                 'validation_metrics': metrics()}
+        diagnostic.assert_checkpoint(path, state)
+        for name in ('epoch010.pth', 'best.pth'):
+            with self.assertRaises(ValueError):
+                diagnostic.assert_checkpoint(path.with_name(name), state)
+        state['ema_state']['num_updates'] = 1000
+        with self.assertRaises(ValueError):
+            diagnostic.assert_checkpoint(path, state)
+
     def test_rejects_incomplete_protocol(self):
         value = metrics()
         diagnostic.assert_protocol(value)

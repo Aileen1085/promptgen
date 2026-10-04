@@ -18,6 +18,19 @@ from v10_2_expert_ablation import save_json_once, sha256_file
 
 SPLIT_SHA256 = '99b2eee8b4ae549537922614b0570665c6fa90387e21e04c69c04ed0652de022'
 VALIDATION_SHA256 = 'd02bde8c7de9b9a20672df2cdc0ca39775a591eef33b89457cdac291c144dc39'
+EXPECTED_EMA_SCORE = 0.7878666850761594
+LOWPG_RUN = 'v10_2_ct13_e490_lowpg_lr_control_10_20261004/20261004_121030'
+
+
+def assert_checkpoint(path, state):
+    path = Path(path).as_posix()
+    if not path.endswith(LOWPG_RUN + '/last.pth'):
+        raise ValueError('Only the authorized last.pth contains the live E10 parameters')
+    score = float((state.get('validation_metrics') or {}).get('selection', {}).get('score', float('nan')))
+    if (int(state.get('epoch', -1)) != 10
+            or int((state.get('ema_state') or {}).get('num_updates', -1)) != 2000
+            or not math.isfinite(score) or abs(score - EXPECTED_EMA_SCORE) > 1e-9):
+        raise ValueError('Requires the completed low-PG E10 checkpoint, EMA2000 and recorded score')
 
 
 def assert_protocol(metrics):
@@ -100,8 +113,7 @@ def main():
     from v10_training_ema import TrainableParameterEMA
 
     state = torch.load(checkpoint, map_location='cpu', weights_only=False, mmap=True)
-    if int(state['epoch']) != 10 or not state.get('ema_state'):
-        raise ValueError('Requires completed low-PG E10 last.pth with live model AND EMA state')
+    assert_checkpoint(checkpoint, state)
     args = evaluation_args(state['args'], gpu=cli.gpu)
     for path, expected in ((args.multidataset_split_json, SPLIT_SHA256),
                            (args.multidataset_validation_json, VALIDATION_SHA256)):
@@ -137,7 +149,7 @@ def main():
     load_sam_tuning_from_checkpoint(adapter.sam, tuning, loaded, required=True)
     ema = TrainableParameterEMA({'prompt': prompt, 'sam': adapter.sam}, args.ema_decay)
     ema.load_state_dict(state['ema_state'])
-    expected_ema = float(state['validation_metrics']['selection']['score'])
+    expected_ema = EXPECTED_EMA_SCORE
     del loaded, state
     adapter.eval()
     prompt.eval()
