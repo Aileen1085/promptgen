@@ -35,6 +35,9 @@ def control_args(source, *, initialization, output, gpu, smoke=False):
                   prompt_generator_checkpoint=str(initialization), resume_checkpoint='',
                   resume_new_run=False, out_dir=str(output), gpu=str(gpu),
                   sam_encoder_unfreeze_epoch=11, amp=True, object_score_gate=False)
+    values['v10_2_poscap_skip_validation'] = bool(smoke)
+    if smoke:
+        values['lr_warmup_epochs'] = 1
     return argparse.Namespace(**values)
 
 

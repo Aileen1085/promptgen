@@ -67,13 +67,17 @@ class ControlTest(unittest.TestCase):
         self.assertEqual(args.train_cases_per_epoch, 200)
 
     def test_smoke_is_separate_and_no_formal_validation(self):
-        source = dict(epochs=10, validate_every=5, train_cases_per_epoch=200)
+        source = dict(epochs=10, validate_every=5, train_cases_per_epoch=200, lr_warmup_epochs=2)
         args = control.control_args(source, initialization='epoch490.pth', output='smoke', gpu=1, smoke=True)
         self.assertEqual(args.epochs, 1)
         self.assertEqual(args.train_cases_per_epoch, 26)
         self.assertFalse(args.validate_before_train)
         self.assertEqual(args.validate_every, 5)
         self.assertEqual(args.sam_encoder_unfreeze_epoch, 11)
+        self.assertLessEqual(args.lr_warmup_epochs, args.epochs)
+        self.assertTrue(args.v10_2_poscap_skip_validation)
+        self.assertFalse((1 % args.validate_every == 0 or 1 == args.epochs)
+                         and not args.v10_2_poscap_skip_validation)
 
     def test_completed_diagnostic_gate_rejects_wrong_ema_or_incomplete(self):
         good = {'ema_weighted_dice': .7878666850761594, 'ema_reproduction_delta': 0,
