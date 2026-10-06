@@ -20,9 +20,9 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from infer.native_sam2_physical_prompts import (expand_z_bounds, gaussian_prior,
+from infer.native_sam2_physical_prompts import (expand_bounds_3d, gaussian_prior,
     map_voxels, pad_points, pad_square, prompt_z_bounds, reorient_grid,
-    sample_scribble_points)
+    sample_scribble_points, prompt_bounds_3d)
 
 CACHE = 'v10/.cache/totalseg_sam2_promptgen_v10_prompt_roi_full_v1'
 PREVIOUS = 'output/ct13_full_val_v92e360_v102e490_20261005'
@@ -267,23 +267,35 @@ def run(args):
     if args.expected_uuid and gpu_uuid != args.expected_uuid.replace('GPU-', ''):
         raise ValueError('CUDA/physical GPU UUID mismatch')
     model = build_sam2_video_predictor('configs/sam2.1/sam2.1_hiera_l.yaml', str(ROOT / args.checkpoint),
-        device='cuda', hydra_overrides_extra=['++model.use_mask_input_as_output_without_sam=false'])
+        device='cuda', hydra_overrides_extra=['++model.use_mask_input_as_output_without_sam=false', '++model.fill_hole_area=0'])
     assert not model.use_mask_input_as_output_without_sam
+    # The optional native CUDA connected-components extension is unavailable on
+    # this server. Explicitly disable the otherwise skipped tiny-hole operation.
+    model.fill_hole_area = 0
     scorer = metric_module(); rows = []; audits = []
     split = read(ROOT / 'configs/ct13_v10_2_split_20260928.json')
     for index, task in enumerate(job['tasks']):
         started = time.time()
         ct, target, fg, bg, spacing, audit = load_task(task, split)
-        initial = prompt_z_bounds(fg, bg, spacing[0]); bounds = initial; stages = []
+        if args.xy_crop == 'prompt':
+            initial = prompt_bounds_3d(fg, bg, spacing)
+        else:
+            initial = (prompt_z_bounds(fg, bg, spacing[0]), (0, ct.shape[1]), (0, ct.shape[2]))
+        bounds = initial; stages = []
         with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
-            for _ in range(4):
-                roi_prediction, stage = predict_roi(model, ct, fg, bg, spacing, bounds, args)
+            for _ in range(8):
+                (_, _), (h0, h1), (w0, w1) = bounds
+                local_bg = bg - np.array([0, h0, w0])
+                roi_prediction, stage = predict_roi(model, ct[:, h0:h1, w0:w1], fg[:, h0:h1, w0:w1],
+                    local_bg, spacing, bounds[0], args)
+                stage['bounds_dhw'] = [list(b) for b in bounds]
                 stages.append(stage)
-                enlarged = expand_z_bounds(roi_prediction, fg, bounds, initial)
+                enlarged = expand_bounds_3d(roi_prediction, fg, bounds, initial)
                 if enlarged == bounds: break
                 bounds = enlarged
             else: raise RuntimeError('AutoExpand did not converge within bounded iterations')
-        prediction = np.zeros(target.shape, bool); prediction[bounds[0]:bounds[1]] = roi_prediction
+        prediction = np.zeros(target.shape, bool)
+        prediction[tuple(slice(start, end) for start, end in bounds)] = roi_prediction
         metrics = scorer.binary_prompt_metrics_from_masks(torch.from_numpy(prediction), torch.from_numpy(target), tuple(spacing))
         supported = fg.any(axis=(1, 2))
         prompt_metrics = scorer.binary_prompt_metrics_from_masks(torch.from_numpy(prediction[supported]),
@@ -293,7 +305,8 @@ def run(args):
         rows.append(dict(task, **values, seconds=time.time() - started))
         audits.append(dict(task, **audit, stages=stages, prompt_frame_dice=float(prompt_metrics['dice']),
             complete_frame_prediction=True, dense_prior=args.dense_prior, native_mask_threshold_logits=0.,
-            semantic_input=False, promptgen_loaded=any('prompt_generator' in name or 'prompt_token_generator' in name for name in sys.modules)))
+            xy_crop=args.xy_crop, native_fill_hole_area=0, semantic_input=False,
+            promptgen_loaded=any('prompt_generator' in name or 'prompt_token_generator' in name for name in sys.modules)))
         assert not audits[-1]['promptgen_loaded']
         write(output / 'all_metrics_live.json', {'per_case_class': rows})
         write(output / 'exact_prompt_audit.json', {'per_case_class': audits})
@@ -304,7 +317,9 @@ def run(args):
         torch.cuda.empty_cache()
     write(output / 'complete_metrics.json', {'model': 'native_sam2.1_hiera_l',
         'checkpoint': args.checkpoint, 'checkpoint_sha256': sha(ROOT / args.checkpoint),
-        'dense_prior': args.dense_prior, 'sigma_mm': args.sigma_mm, 'amplitude': args.amplitude,
+        'source_sha256': {str(p.relative_to(ROOT)): sha(p) for p in
+            (Path(__file__), ROOT / 'infer/native_sam2_physical_prompts.py')},
+        'dense_prior': args.dense_prior, 'xy_crop': args.xy_crop, 'sigma_mm': args.sigma_mm, 'amplitude': args.amplitude,
         'max_points_per_supported_slice': args.max_points, 'gpu_uuid': gpu_uuid,
         'metric_protocol': 'complete_mask; axial_union_nonempty; physical_axial_NSD1/2/3',
         'per_case_class': rows, 'summary': scorer.aggregate_promptgen_binary_metrics(rows)})
@@ -318,6 +333,7 @@ def parse_args(argv=None):
     parser.add_argument('--output', default='output/native_sam2_physical_pilot_20261006')
     parser.add_argument('--checkpoint', default='sam2/checkpoints/sam2.1_hiera_large.pt')
     parser.add_argument('--dense-prior', choices=('none', 'gaussian'), default='gaussian')
+    parser.add_argument('--xy-crop', choices=('full', 'prompt'), default='prompt')
     parser.add_argument('--sigma-mm', type=float, default=2.)
     parser.add_argument('--amplitude', type=float, default=4.)
     parser.add_argument('--max-points', type=int, default=16)

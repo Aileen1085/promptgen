@@ -81,3 +81,24 @@ def test_expansion_only_on_prompt_connected_component_and_cap():
     assert m.expand_z_bounds(pred, fg, (10, 50), (20, 40)) == (10, 50)
     disconnected = np.zeros((20, 5, 5), bool); disconnected[0, 0, 0] = True
     assert m.expand_z_bounds(disconnected, fg, (20, 40), (20, 40)) == (20, 40)
+
+
+def test_three_dimensional_crop_preserves_all_original_prompts():
+    m = api()
+    fg = np.zeros((40, 100, 100), bool); fg[15:20, 40:50, 50] = True
+    bg = np.array([[8, 30, 20], [30, 70, 80]])
+    bounds = m.prompt_bounds_3d(fg, bg, (2., 1., 1.))
+    assert bounds[0] == (8, 31)
+    for axis, (start, end) in enumerate(bounds):
+        positions = np.r_[np.argwhere(fg)[:, axis], bg[:, axis]]
+        assert start <= positions.min() and end > positions.max()
+    assert bounds[1][1] - bounds[1][0] < 100
+
+
+def test_three_dimensional_expand_only_touched_axis_and_cap():
+    m = api()
+    fg = np.zeros((60, 60, 60), bool); fg[30, 30, 30] = True
+    initial = ((20, 40),) * 3
+    pred = np.zeros((20, 20, 20), bool); pred[10, :, 10] = True
+    result = m.expand_bounds_3d(pred, fg, initial, initial)
+    assert result == ((20, 40), (10, 50), (20, 40))

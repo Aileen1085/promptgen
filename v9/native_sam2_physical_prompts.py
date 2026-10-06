@@ -120,3 +120,37 @@ def expand_z_bounds(prediction, foreground, bounds, initial_bounds):
     if connected[-1].any():
         end = min(upper, end + growth)
     return start, end
+
+
+def prompt_bounds_3d(foreground, background_dhw, spacing_dhw, context_mm=8., fraction=.2):
+    """Prompt-only local crop, including every original negative point."""
+    coords = np.argwhere(foreground)
+    bg = np.asarray(background_dhw).reshape(-1, 3)
+    z = prompt_z_bounds(foreground, bg, spacing_dhw[0], context_mm, fraction)
+    positions = np.concatenate((coords, bg), axis=0)
+    bounds = [z]
+    for axis in (1, 2):
+        start, end = int(positions[:, axis].min()), int(positions[:, axis].max()) + 1
+        margin = max(int(math.ceil(context_mm / spacing_dhw[axis])), int(math.ceil((end - start) * fraction)))
+        bounds.append((max(0, start - margin), min(foreground.shape[axis], end + margin)))
+    return tuple(bounds)
+
+
+def expand_bounds_3d(prediction, foreground, bounds, initial_bounds):
+    slices = tuple(slice(start, end) for start, end in bounds)
+    components, _ = label(np.asarray(prediction) > 0)
+    touched = np.unique(components[np.asarray(foreground[slices]) > 0])
+    touched = touched[touched != 0]
+    if not len(touched):
+        return bounds
+    connected = np.isin(components, touched)
+    expanded = []
+    for axis, ((start, end), (initial_start, initial_end)) in enumerate(zip(bounds, initial_bounds)):
+        growth = int(math.ceil((end - start) * .5))
+        limit = int(math.ceil((initial_end - initial_start) * .5))
+        if np.take(connected, 0, axis=axis).any():
+            start = max(0, initial_start - limit, start - growth)
+        if np.take(connected, -1, axis=axis).any():
+            end = min(foreground.shape[axis], initial_end + limit, end + growth)
+        expanded.append((start, end))
+    return tuple(expanded)
