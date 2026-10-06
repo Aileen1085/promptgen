@@ -22,7 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from infer.native_sam2_physical_prompts import (expand_bounds_3d, gaussian_prior,
     map_voxels, pad_points, pad_square, prompt_z_bounds, reorient_grid,
-    sample_scribble_points, prompt_bounds_3d, annotation_order, probability_gaussian_prior)
+    sample_scribble_points, prompt_bounds_3d, annotation_order, probability_gaussian_prior,
+    training_background_scribble_coords)
 
 CACHE = 'v10/.cache/totalseg_sam2_promptgen_v10_prompt_roi_full_v1'
 PREVIOUS = 'output/ct13_full_val_v92e360_v102e490_20261005'
@@ -92,7 +93,7 @@ def canonical(path):
     return image, affine
 
 
-def load_task(task, split):
+def load_task(task, split, background_mode='point', background_cache_dir=''):
     """Canonical target and exact cache-grid reorientation; target never selects ROI."""
     source = task['source_name']
     entry = next(r for r in split['datasets'][source]['val'] if r['case_id'] == task['case_id'])
@@ -110,6 +111,7 @@ def load_task(task, split):
                     bitorder='little').reshape(shape).astype(bool) for name in ('coronal_bits', 'sagittal_bits')]
         bg = np.asarray(package['background_points_dhw'], dtype=np.float64).reshape(-1, 3)
         case_name = str(package['case_image_name'].item())
+        plane_slices = [int(v) for v in package['slices'].reshape(2)]
     ct = np.load(ROOT / CACHE / '_case_images_v1' / case_name, mmap_mode='r')
     assert ct.shape == shape, 'prompt/cache source grid mismatch'
     source_affine = target_affine.copy()
@@ -133,6 +135,30 @@ def load_task(task, split):
     assert np.array_equal(mapped_mask, foreground), 'array and coordinate mapping disagree'
     assert len(bg) == 4 and len(supports) == 2, 'expected original 2 FG planes and 4 BG points'
     assert ((bg >= 0) & (bg < np.asarray(target_shape))).all(), 'background outside image'
+    bg_signature = None; bg_cache_hit = None
+    if background_mode == 'scribble':
+        if source != 'amos':
+            raise ValueError('background scribble pilot currently supports canonical AMOS only')
+        label_stat = Path(label_path).stat()
+        signature = {'version': 'v9_training_rectangle_bg_v1', 'margin_ratio': .08,
+            'foreground_package_sha256': sha(package_path), 'shape': list(target.shape),
+            'label_signature': [str(label_path), label_stat.st_size, label_stat.st_mtime_ns]}
+        bg_signature = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()
+        if not background_cache_dir:
+            raise ValueError('scribble mode requires a dedicated lightweight background cache directory')
+        cache_path = Path(background_cache_dir) / (bg_signature + '.npz')
+        bg_cache_hit = cache_path.is_file()
+        if bg_cache_hit:
+            with np.load(cache_path, allow_pickle=False) as saved:
+                assert str(saved['signature'].item()) == bg_signature
+                bg = saved['coords_dhw'].astype(np.int32)
+        else:
+            bg = training_background_scribble_coords(target, *plane_slices)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache_path.with_name(cache_path.name + '.{}.tmp.npz'.format(os.getpid()))
+            np.savez_compressed(temporary, coords_dhw=bg, signature=np.asarray(bg_signature))
+            os.replace(str(temporary), str(cache_path))
+        assert len(bg) and not target[tuple(bg.T)].any(), 'background scribble overlaps simulated target'
     spacing = np.linalg.norm(target_affine[:3, :3], axis=0)
     audit = {'prompt_cache_sha256': sha(package_path), 'case_image_name': case_name,
         'source_shape_dhw': shape, 'target_shape_dhw': target_shape,
@@ -142,7 +168,10 @@ def load_task(task, split):
         'mapped_plane_voxels': [int(s.sum()) for s in transformed],
         'fg_voxels': int(foreground.sum()), 'fg_in_gt_fraction': float(target[foreground].mean()),
         'bg_points_dhw': bg.tolist(), 'bg_in_gt_count': int(target[tuple(bg.T)].sum()),
-        'spacing_dhw_mm': spacing.tolist(), 'gt_used_for_input': False}
+        'spacing_dhw_mm': spacing.tolist(), 'gt_used_for_input': False,
+        'background_mode': background_mode, 'background_cache_signature': bg_signature,
+        'background_cache_hit': bg_cache_hit,
+        'gt_used_only_for_background_prompt_simulation': background_mode == 'scribble'}
     return ct, target, foreground, bg, spacing, audit
 
 
@@ -209,8 +238,14 @@ def predict_roi(model, ct, foreground, bg, spacing, bounds, args):
         for z in annotated:
             if background_only and z == background_only[0]:
                 model.propagate_in_video_preflight(state)
-            sampled = sample_scribble_points(foreground[z], spacing[1:], args.max_points)
+            sampled = sample_scribble_points(foreground[z], spacing[1:], args.max_points, args.point_spacing_mm)
             negatives = bg[bg[:, 0] == z, 1:]
+            original_negative_count = len(negatives)
+            if args.max_background_points > 0 and len(negatives) > args.max_background_points:
+                negative_mask = np.zeros((height, width), bool)
+                negative_mask[tuple(negatives.T)] = True
+                negatives = sample_scribble_points(negative_mask, spacing[1:], args.max_background_points,
+                    args.point_spacing_mm)[:, ::-1].astype(int)
             points = np.concatenate((sampled, negatives[:, ::-1].astype(np.float32)))
             labels = np.r_[np.ones(len(sampled), np.int32), np.zeros(len(negatives), np.int32)]
             if len(sampled):
@@ -219,7 +254,9 @@ def predict_roi(model, ct, foreground, bg, spacing, bounds, args):
             evidence[frame] = gaussian_prior(foreground[z], negatives, spacing[1:], args.sigma_mm, args.amplitude)
             if args.dense_prior == 'probability':
                 evidence[frame] = probability_gaussian_prior(foreground[z], negatives, spacing[1:], args.sigma_mm)
-            provenance.append({'z': z, 'fg_sampled_xy': sampled.tolist(), 'bg_original_yx': negatives.tolist()})
+            provenance.append({'z': z, 'fg_sampled_xy': sampled.tolist(), 'bg_original_yx': negatives.tolist(),
+                'foreground_support_pixels': int(foreground[z].sum()),
+                'background_support_pixels': original_negative_count})
             model.add_new_points_or_box(state, frame_idx=frame, obj_id=1,
                 points=pad_points(points, offset), labels=labels, clear_old_points=True)
         anchor = int(np.argmax(foreground[start:end].sum(axis=(1, 2))))
@@ -236,10 +273,15 @@ def predict_roi(model, ct, foreground, bg, spacing, bounds, args):
         expected_fg = [z for z in range(start, end) if foreground[z].any()]
         actual_fg = sorted(p['z'] for p in provenance if p['fg_sampled_xy'])
         assert actual_fg == expected_fg, 'foreground-supported axial slice missed points'
-        assert sum(len(p['bg_original_yx']) for p in provenance) == len(bg), 'original background point omitted'
+        expected_bg_frames = sorted(set(bg[:, 0].tolist()))
+        actual_bg_frames = sorted(p['z'] for p in provenance if p['bg_original_yx'])
+        assert actual_bg_frames == expected_bg_frames, 'background-supported axial slice missed points'
+        if args.max_background_points == 0:
+            assert sum(len(p['bg_original_yx']) for p in provenance) == len(bg), 'original background support omitted'
         return result, {'bounds_z': list(bounds), 'annotated_frames': annotated, 'native_encoder': counters,
             'foreground_supported_frames': expected_fg, 'foreground_point_frames': actual_fg,
             'background_points_encoded': sum(len(p['bg_original_yx']) for p in provenance),
+            'background_support_frames': expected_bg_frames, 'background_point_frames': actual_bg_frames,
             'effective_memory_slots': int(model.num_maskmem),
             'background_only_frames_memory_conditioned': background_only,
             'roi_frames_predicted': len(visited), 'point_provenance': provenance,
@@ -288,6 +330,13 @@ def run(args):
     job = read(args.job); output = Path(job['output']); output.mkdir(parents=True, exist_ok=True)
     args.dense_prior = job.get('dense_prior', args.dense_prior)
     args.memory_mode = job.get('memory_mode', args.memory_mode)
+    args.background_mode = job.get('background_mode', args.background_mode)
+    args.background_cache_dir = job.get('background_cache_dir', args.background_cache_dir)
+    args.max_points = int(job.get('max_points', args.max_points))
+    args.max_background_points = int(job.get('max_background_points', args.max_background_points))
+    args.point_spacing_mm = float(job.get('point_spacing_mm', args.point_spacing_mm))
+    if min(args.max_points, args.max_background_points) < 0:
+        raise ValueError('point caps cannot be negative; zero means all scribble support')
     gpu_uuid = str(torch.cuda.get_device_properties(0).uuid).replace('GPU-', '')
     if args.expected_uuid and gpu_uuid != args.expected_uuid.replace('GPU-', ''):
         raise ValueError('CUDA/physical GPU UUID mismatch')
@@ -305,7 +354,7 @@ def run(args):
     split = read(ROOT / 'configs/ct13_v10_2_split_20260928.json')
     for index, task in enumerate(job['tasks']):
         started = time.time()
-        ct, target, fg, bg, spacing, audit = load_task(task, split)
+        ct, target, fg, bg, spacing, audit = load_task(task, split, args.background_mode, args.background_cache_dir)
         if args.xy_crop == 'prompt':
             initial = prompt_bounds_3d(fg, bg, spacing)
         else:
@@ -351,6 +400,8 @@ def run(args):
             (Path(__file__), ROOT / 'infer/native_sam2_physical_prompts.py')},
         'dense_prior': args.dense_prior, 'xy_crop': args.xy_crop, 'sigma_mm': args.sigma_mm, 'amplitude': args.amplitude,
         'memory_mode': args.memory_mode, 'effective_memory_slots': int(model.num_maskmem),
+        'background_mode': args.background_mode, 'max_background_points_per_supported_slice': args.max_background_points,
+        'point_spacing_mm': args.point_spacing_mm,
         'max_points_per_supported_slice': args.max_points, 'gpu_uuid': gpu_uuid,
         'metric_protocol': 'complete_mask; axial_union_nonempty; physical_axial_NSD1/2/3',
         'per_case_class': rows, 'summary': scorer.aggregate_promptgen_binary_metrics(rows)})
@@ -367,7 +418,11 @@ def parse_args(argv=None):
     parser.add_argument('--xy-crop', choices=('full', 'prompt'), default='prompt')
     parser.add_argument('--sigma-mm', type=float, default=2.)
     parser.add_argument('--amplitude', type=float, default=4.)
-    parser.add_argument('--max-points', type=int, default=16)
+    parser.add_argument('--max-points', type=int, default=16, help='foreground cap per supported slice; 0 means all pixels')
+    parser.add_argument('--background-mode', choices=('point', 'scribble'), default='point')
+    parser.add_argument('--background-cache-dir', default='')
+    parser.add_argument('--max-background-points', type=int, default=0, help='background cap per supported slice; 0 means all pixels')
+    parser.add_argument('--point-spacing-mm', type=float, default=0., help='minimum physical separation within each foreground/background role')
     parser.add_argument('--memory-mode', choices=('on', 'off'), default='on')
     parser.add_argument('--expected-uuid')
     return parser.parse_args(argv)

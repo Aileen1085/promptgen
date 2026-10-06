@@ -53,20 +53,56 @@ def pad_points(points_xy, offset):
     return np.asarray(points_xy, dtype=np.float32).reshape(-1, 2) + np.asarray(offset, dtype=np.float32)
 
 
-def sample_scribble_points(mask, spacing_yx, max_points=16):
+def sample_scribble_points(mask, spacing_yx, max_points=16, min_spacing_mm=0.):
     """Deterministic physical farthest-point sampling; no GT or new locations."""
+    if int(max_points) < 0 or float(min_spacing_mm) < 0:
+        raise ValueError('point cap must be nonnegative; zero means all support')
     coords = np.argwhere(np.asarray(mask) > 0)
     if not len(coords):
         return np.zeros((0, 2), dtype=np.float32)
+    if int(max_points) == 0 and float(min_spacing_mm) == 0:
+        return coords[:, ::-1].astype(np.float32)
     physical = coords * np.asarray(spacing_yx)
     center = physical.mean(axis=0)
     selected = [int(np.argmin(((physical - center) ** 2).sum(axis=1)))]
     distance = np.full(len(coords), np.inf)
-    for _ in range(min(int(max_points), len(coords)) - 1):
+    cap = int(max_points) or len(coords)
+    for _ in range(min(cap, len(coords)) - 1):
         distance = np.minimum(distance, ((physical - physical[selected[-1]]) ** 2).sum(axis=1))
         distance[selected] = -1.
-        selected.append(int(np.argmax(distance)))
+        candidate = int(np.argmax(distance))
+        if distance[candidate] < float(min_spacing_mm) ** 2:
+            break
+        selected.append(candidate)
     return coords[selected, ::-1].astype(np.float32)
+
+
+def training_background_scribble_coords(target, coronal_slice, sagittal_slice, margin_ratio=.08):
+    """v9 training rectangle outlines, simulated only on the two prompt planes.
+
+    GT is used here solely to simulate a user background scribble, not to
+    select a prediction ROI. The resulting sparse coordinates are the prompt.
+    """
+    target = np.asarray(target, dtype=bool)
+    coordinates = []
+    for plane, index in (('coronal', int(coronal_slice)), ('sagittal', int(sagittal_slice))):
+        mask = target[:, :, index] if plane == 'coronal' else target[:, index, :]
+        hits = np.argwhere(mask)
+        if not len(hits):
+            raise ValueError('empty selected target prompt plane')
+        r0, c0 = hits.min(axis=0); r1, c1 = hits.max(axis=0)
+        margin = max(2, int(round(min(mask.shape) * float(margin_ratio))))
+        r0 = max(0, int(r0) - margin); c0 = max(0, int(c0) - margin)
+        r1 = min(mask.shape[0] - 1, int(r1) + margin)
+        c1 = min(mask.shape[1] - 1, int(c1) + margin)
+        scribble = np.zeros(mask.shape, bool)
+        scribble[r0, c0:c1 + 1] = True; scribble[r1, c0:c1 + 1] = True
+        scribble[r0:r1 + 1, c0] = True; scribble[r0:r1 + 1, c1] = True
+        scribble[mask] = False
+        rows, cols = np.nonzero(scribble)
+        fixed = np.full(len(rows), index)
+        coordinates.append(np.column_stack((rows, cols, fixed) if plane == 'coronal' else (rows, fixed, cols)))
+    return np.unique(np.concatenate(coordinates), axis=0).astype(np.int32)
 
 
 def gaussian_prior(foreground, background_yx, spacing_yx, sigma_mm=2., amplitude=4., output_size=256):
