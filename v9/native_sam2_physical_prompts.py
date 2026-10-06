@@ -154,3 +154,10 @@ def expand_bounds_3d(prediction, foreground, bounds, initial_bounds):
             end = min(foreground.shape[axis], initial_end + limit, end + growth)
         expanded.append((start, end))
     return tuple(expanded)
+
+
+def annotation_order(foreground, background_dhw, bounds_z):
+    start, end = bounds_z
+    fg = sorted(z for z in np.flatnonzero(foreground.any(axis=(1, 2))).tolist() if start <= z < end)
+    bg_only = sorted(z for z in set(np.asarray(background_dhw)[:, 0].tolist()) - set(fg) if start <= z < end)
+    return fg + bg_only, bg_only

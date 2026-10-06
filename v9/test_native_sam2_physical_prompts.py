@@ -102,3 +102,11 @@ def test_three_dimensional_expand_only_touched_axis_and_cap():
     pred = np.zeros((20, 20, 20), bool); pred[10, :, 10] = True
     result = m.expand_bounds_3d(pred, fg, initial, initial)
     assert result == ((20, 40), (10, 50), (20, 40))
+
+
+def test_negative_only_frames_do_not_define_a_foreground_object():
+    m = api()
+    fg = np.zeros((15, 3, 3), bool); fg[5:7, 1, 1] = True
+    bg = np.array([[1, 0, 0], [5, 0, 0], [13, 0, 0]])
+    frames, bg_only = m.annotation_order(fg, bg, (0, 15))
+    assert frames == [5, 6, 1, 13] and bg_only == [1, 13]

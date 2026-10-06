@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from infer.native_sam2_physical_prompts import (expand_bounds_3d, gaussian_prior,
     map_voxels, pad_points, pad_square, prompt_z_bounds, reorient_grid,
-    sample_scribble_points, prompt_bounds_3d)
+    sample_scribble_points, prompt_bounds_3d, annotation_order)
 
 CACHE = 'v10/.cache/totalseg_sam2_promptgen_v10_prompt_roi_full_v1'
 PREVIOUS = 'output/ct13_full_val_v92e360_v102e490_20261005'
@@ -186,16 +186,22 @@ def predict_roi(model, ct, foreground, bg, spacing, bounds, args):
         return original_encoder(*a, **kw)
     encoder.forward = encoded
     original_step = model._run_single_frame_inference
+    annotated, background_only = annotation_order(foreground, bg, bounds)
     def step(self, **kwargs):
         frame = kwargs['frame_idx']
-        if kwargs['is_init_cond_frame'] and kwargs['point_inputs'] is not None and args.dense_prior == 'gaussian':
+        if kwargs['point_inputs'] is not None and not kwargs['run_mem_encoder']:
+            # A negative-only frame cannot define the identity of a new object.
+            # Use the native memory of the already registered positive frames.
+            if frame + start in background_only:
+                kwargs['is_init_cond_frame'] = False
+        if kwargs['point_inputs'] is not None and not kwargs['run_mem_encoder'] and args.dense_prior == 'gaussian':
             kwargs['prev_sam_mask_logits'] = torch.from_numpy(evidence[frame])[None, None].to(self.device)
         return original_step(**kwargs)
     model._run_single_frame_inference = types.MethodType(step, model)
-    annotated = sorted(set(np.flatnonzero(foreground.any(axis=(1, 2))).tolist()) | set(bg[:, 0].tolist()))
-    annotated = [z for z in annotated if start <= z < end]
     try:
         for z in annotated:
+            if background_only and z == background_only[0]:
+                model.propagate_in_video_preflight(state)
             sampled = sample_scribble_points(foreground[z], spacing[1:], args.max_points)
             negatives = bg[bg[:, 0] == z, 1:]
             points = np.concatenate((sampled, negatives[:, ::-1].astype(np.float32)))
@@ -219,6 +225,7 @@ def predict_roi(model, ct, foreground, bg, spacing, bounds, args):
         assert counters['point_encoder_calls'] >= len(annotated)
         assert counters['mask_encoder_calls'] == (len(annotated) if args.dense_prior == 'gaussian' else 0)
         return result, {'bounds_z': list(bounds), 'annotated_frames': annotated, 'native_encoder': counters,
+            'background_only_frames_memory_conditioned': background_only,
             'roi_frames_predicted': len(visited), 'point_provenance': provenance,
             'image_percentile_1_99': [float(low), float(high)], 'square_pad_left_top': list(offset)}
     finally:
