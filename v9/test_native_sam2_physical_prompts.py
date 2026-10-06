@@ -110,3 +110,11 @@ def test_negative_only_frames_do_not_define_a_foreground_object():
     bg = np.array([[1, 0, 0], [5, 0, 0], [13, 0, 0]])
     frames, bg_only = m.annotation_order(fg, bg, (0, 15))
     assert frames == [5, 6, 1, 13] and bg_only == [1, 13]
+
+
+def test_probability_heatmap_is_bounded_and_preserves_negative_points():
+    m = api()
+    fg = np.zeros((41, 41), bool); fg[20, 20] = True
+    prior = m.probability_gaussian_prior(fg, np.array([[5, 5]]), (1., 1.), output_size=41)
+    assert 0 <= prior.min() <= prior.max() <= 1
+    assert prior[20, 20] == 1 and prior[5, 5] == 0 and prior[0, 40] == 0

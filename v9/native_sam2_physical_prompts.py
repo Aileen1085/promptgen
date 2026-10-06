@@ -161,3 +161,8 @@ def annotation_order(foreground, background_dhw, bounds_z):
     fg = sorted(z for z in np.flatnonzero(foreground.any(axis=(1, 2))).tolist() if start <= z < end)
     bg_only = sorted(z for z in set(np.asarray(background_dhw)[:, 0].tolist()) - set(fg) if start <= z < end)
     return fg + bg_only, bg_only
+
+
+def probability_gaussian_prior(foreground, background_yx, spacing_yx, sigma_mm=2., output_size=256):
+    return np.clip(gaussian_prior(foreground, background_yx, spacing_yx,
+        sigma_mm=sigma_mm, amplitude=1., output_size=output_size), 0., 1.)

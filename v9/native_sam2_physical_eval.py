@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from infer.native_sam2_physical_prompts import (expand_bounds_3d, gaussian_prior,
     map_voxels, pad_points, pad_square, prompt_z_bounds, reorient_grid,
-    sample_scribble_points, prompt_bounds_3d, annotation_order)
+    sample_scribble_points, prompt_bounds_3d, annotation_order, probability_gaussian_prior)
 
 CACHE = 'v10/.cache/totalseg_sam2_promptgen_v10_prompt_roi_full_v1'
 PREVIOUS = 'output/ct13_full_val_v92e360_v102e490_20261005'
@@ -194,7 +194,7 @@ def predict_roi(model, ct, foreground, bg, spacing, bounds, args):
             # Use the native memory of the already registered positive frames.
             if frame + start in background_only:
                 kwargs['is_init_cond_frame'] = False
-        if kwargs['point_inputs'] is not None and not kwargs['run_mem_encoder'] and args.dense_prior == 'gaussian':
+        if kwargs['point_inputs'] is not None and not kwargs['run_mem_encoder'] and args.dense_prior != 'none':
             kwargs['prev_sam_mask_logits'] = torch.from_numpy(evidence[frame])[None, None].to(self.device)
         return original_step(**kwargs)
     model._run_single_frame_inference = types.MethodType(step, model)
@@ -210,6 +210,8 @@ def predict_roi(model, ct, foreground, bg, spacing, bounds, args):
                 assert foreground[z][tuple(sampled[:, ::-1].astype(int).T)].all(), 'point outside original scribble'
             frame = z - start
             evidence[frame] = gaussian_prior(foreground[z], negatives, spacing[1:], args.sigma_mm, args.amplitude)
+            if args.dense_prior == 'probability':
+                evidence[frame] = probability_gaussian_prior(foreground[z], negatives, spacing[1:], args.sigma_mm)
             provenance.append({'z': z, 'fg_sampled_xy': sampled.tolist(), 'bg_original_yx': negatives.tolist()})
             model.add_new_points_or_box(state, frame_idx=frame, obj_id=1,
                 points=pad_points(points, offset), labels=labels, clear_old_points=True)
@@ -223,7 +225,7 @@ def predict_roi(model, ct, foreground, bg, spacing, bounds, args):
                 visited.add(frame)
         assert len(visited) == end - start, 'missing true ROI frames'
         assert counters['point_encoder_calls'] >= len(annotated)
-        assert counters['mask_encoder_calls'] == (len(annotated) if args.dense_prior == 'gaussian' else 0)
+        assert counters['mask_encoder_calls'] == (len(annotated) if args.dense_prior != 'none' else 0)
         return result, {'bounds_z': list(bounds), 'annotated_frames': annotated, 'native_encoder': counters,
             'background_only_frames_memory_conditioned': background_only,
             'roi_frames_predicted': len(visited), 'point_provenance': provenance,
@@ -339,7 +341,7 @@ def parse_args(argv=None):
     parser.add_argument('--full', action='store_true')
     parser.add_argument('--output', default='output/native_sam2_physical_pilot_20261006')
     parser.add_argument('--checkpoint', default='sam2/checkpoints/sam2.1_hiera_large.pt')
-    parser.add_argument('--dense-prior', choices=('none', 'gaussian'), default='gaussian')
+    parser.add_argument('--dense-prior', choices=('none', 'gaussian', 'probability'), default='gaussian')
     parser.add_argument('--xy-crop', choices=('full', 'prompt'), default='prompt')
     parser.add_argument('--sigma-mm', type=float, default=2.)
     parser.add_argument('--amplitude', type=float, default=4.)
