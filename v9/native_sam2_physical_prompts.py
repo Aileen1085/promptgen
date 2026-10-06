@@ -78,7 +78,7 @@ def sample_scribble_points(mask, spacing_yx, max_points=16, min_spacing_mm=0.):
 
 
 def training_background_scribble_coords(target, coronal_slice, sagittal_slice, margin_ratio=.08):
-    """v9 training rectangle outlines, simulated only on the two prompt planes.
+    """Current v9 training vertical lines, simulated on the two prompt planes.
 
     GT is used here solely to simulate a user background scribble, not to
     select a prediction ROI. The resulting sparse coordinates are the prompt.
@@ -92,13 +92,29 @@ def training_background_scribble_coords(target, coronal_slice, sagittal_slice, m
             raise ValueError('empty selected target prompt plane')
         r0, c0 = hits.min(axis=0); r1, c1 = hits.max(axis=0)
         margin = max(2, int(round(min(mask.shape) * float(margin_ratio))))
-        r0 = max(0, int(r0) - margin); c0 = max(0, int(c0) - margin)
-        r1 = min(mask.shape[0] - 1, int(r1) + margin)
-        c1 = min(mask.shape[1] - 1, int(c1) + margin)
+        row0 = max(0, int(r0) - margin)
+        row1 = min(mask.shape[0] - 1, int(r1) + margin)
+        candidates = []
+        if c0 - margin >= 0: candidates.append(int(c0) - margin)
+        if c1 + margin < mask.shape[1]: candidates.append(int(c1) + margin)
+        candidates.extend([0, mask.shape[1] - 1, max(0, int(c0) - 1), min(mask.shape[1] - 1, int(c1) + 1)])
         scribble = np.zeros(mask.shape, bool)
-        scribble[r0, c0:c1 + 1] = True; scribble[r1, c0:c1 + 1] = True
-        scribble[r0:r1 + 1, c0] = True; scribble[r0:r1 + 1, c1] = True
-        scribble[mask] = False
+        seen = set()
+        for col in candidates:
+            col = int(np.clip(col, 0, mask.shape[1] - 1))
+            if col in seen: continue
+            seen.add(col)
+            line = np.zeros(mask.shape, bool)
+            line[row0:row1 + 1, col] = True; line[mask] = False
+            if line.any():
+                scribble = line; break
+        if not scribble.any() and (~mask).any():
+            outside = np.argwhere(~mask)
+            col = int(outside[len(outside) // 2, 1])
+            line_rows = outside[outside[:, 1] == col, 0]
+            if len(line_rows):
+                scribble[int(line_rows.min()):int(line_rows.max()) + 1, col] = True
+                scribble[mask] = False
         rows, cols = np.nonzero(scribble)
         fixed = np.full(len(rows), index)
         coordinates.append(np.column_stack((rows, cols, fixed) if plane == 'coronal' else (rows, fixed, cols)))

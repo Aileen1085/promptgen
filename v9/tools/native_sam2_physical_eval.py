@@ -140,7 +140,7 @@ def load_task(task, split, background_mode='point', background_cache_dir=''):
         if source != 'amos':
             raise ValueError('background scribble pilot currently supports canonical AMOS only')
         label_stat = Path(label_path).stat()
-        signature = {'version': 'v9_training_rectangle_bg_v1', 'margin_ratio': .08,
+        signature = {'version': 'v9_training_vertical_bg_v1', 'margin_ratio': .08,
             'foreground_package_sha256': sha(package_path), 'shape': list(target.shape),
             'label_signature': [str(label_path), label_stat.st_size, label_stat.st_mtime_ns]}
         bg_signature = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()
@@ -241,7 +241,7 @@ def predict_roi(model, ct, foreground, bg, spacing, bounds, args):
             sampled = sample_scribble_points(foreground[z], spacing[1:], args.max_points, args.point_spacing_mm)
             negatives = bg[bg[:, 0] == z, 1:]
             original_negative_count = len(negatives)
-            if args.max_background_points > 0 and len(negatives) > args.max_background_points:
+            if args.max_background_points > 0 and len(negatives):
                 negative_mask = np.zeros((height, width), bool)
                 negative_mask[tuple(negatives.T)] = True
                 negatives = sample_scribble_points(negative_mask, spacing[1:], args.max_background_points,
