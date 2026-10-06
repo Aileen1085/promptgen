@@ -78,7 +78,8 @@ def select_target(label, task):
     return np.rint(values).astype(np.int32) == int(task['local_class_id'])
 
 
-def assert_compatible_grid(image_affine, label_affine, shape, tolerance_mm=.1):
+def assert_compatible_grid(image_affine, label_affine, shape, tolerance_mm=.1,
+                           image_qform=None, label_qform=None):
     # Some TotalSeg mask qforms round oblique direction cosines differently
     # from the CT sform. Compare physical corner displacement, not coefficients.
     import itertools
@@ -86,7 +87,11 @@ def assert_compatible_grid(image_affine, label_affine, shape, tolerance_mm=.1):
     homogeneous = np.c_[corners, np.ones(len(corners))]
     delta = homogeneous @ (np.asarray(image_affine)-np.asarray(label_affine)).T
     error = float(np.linalg.norm(delta[:, :3], axis=1).max())
-    if error > tolerance_mm:
+    # Matching quaternion metadata proves index correspondence when sform
+    # direction cosines suffered small export rounding. Never resample data.
+    same_qform = (image_qform is not None and label_qform is not None and
+                  np.allclose(image_qform, label_qform, atol=1e-6, rtol=0))
+    if error > tolerance_mm and not (same_qform and error <= .25):
         raise ValueError('label/CT physical grid mismatch: {:.6f} mm'.format(error))
     return error
 
@@ -167,11 +172,12 @@ class CaseLoader:
                 ct=self.base.reorient_grid(raw,source_affine,target_affine,tuple(image.shape[i] for i in (2,0,1)))
             else:
                 ct=np.asarray(image.dataobj,dtype=np.float32).transpose(2,0,1)
-            self.case=(ct,target_affine,source_affine,hit);self.current=current;self.label_name=None;self.label=None
-        ct,target_affine,source_affine,hit=self.case
+            self.case=(ct,target_affine,source_affine,hit,image.get_qform());self.current=current;self.label_name=None;self.label=None
+        ct,target_affine,source_affine,hit,image_qform=self.case
         if self.label_name!=str(label_path):
             image,affine=self.base.canonical(label_path)
-            assert_compatible_grid(target_affine,affine,ct.shape)
+            assert_compatible_grid(target_affine,affine,ct.shape,
+                                   image_qform=image_qform, label_qform=image.get_qform())
             self.label=np.asarray(image.dataobj).transpose(2,0,1);self.label_name=str(label_path)
         target=select_target(self.label,task)
         assert target.shape==ct.shape and target.any(),'empty/misaligned manifest target'
