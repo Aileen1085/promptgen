@@ -78,6 +78,19 @@ def select_target(label, task):
     return np.rint(values).astype(np.int32) == int(task['local_class_id'])
 
 
+def assert_compatible_grid(image_affine, label_affine, shape, tolerance_mm=.1):
+    # Some TotalSeg mask qforms round oblique direction cosines differently
+    # from the CT sform. Compare physical corner displacement, not coefficients.
+    import itertools
+    corners = np.asarray(list(itertools.product(*[(0, n-1) for n in shape])), dtype=float)
+    homogeneous = np.c_[corners, np.ones(len(corners))]
+    delta = homogeneous @ (np.asarray(image_affine)-np.asarray(label_affine)).T
+    error = float(np.linalg.norm(delta[:, :3], axis=1).max())
+    if error > tolerance_mm:
+        raise ValueError('label/CT physical grid mismatch: {:.6f} mm'.format(error))
+    return error
+
+
 def canonical_plane_slices(supports):
     candidates = []
     for support in supports:
@@ -158,7 +171,7 @@ class CaseLoader:
         ct,target_affine,source_affine,hit=self.case
         if self.label_name!=str(label_path):
             image,affine=self.base.canonical(label_path)
-            assert np.allclose(affine,target_affine,atol=1e-4),'label/CT affine mismatch'
+            assert_compatible_grid(target_affine,affine,ct.shape)
             self.label=np.asarray(image.dataobj).transpose(2,0,1);self.label_name=str(label_path)
         target=select_target(self.label,task)
         assert target.shape==ct.shape and target.any(),'empty/misaligned manifest target'
