@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location('_ct13_source_best_base', ROOT / 'tools/ct13_full_validation_eval.py')
 base = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(base)
-DEFAULT_OUT = 'output/v102_source_best_ct13_full6094_20261007'
+DEFAULT_OUT = 'output/v102_source_best_ct13_full6094_20261007_encoderfix'
 REF_OUT = 'output/ct13_full_val_v92e360_v102e490_20261005'
 CHECKPOINTS = {
     'A_E10': 'v10/output/v10_2_ct13_e490_decoder_frozen_control_10_20261005/20261005_155255/epoch010.pth',
@@ -124,8 +124,46 @@ def verify_inputs(out):
         validate_job_selection(job)
 
 
+def restore_encoder_delta(sam, mode, state, configure, loader):
+    if not mode or not state.get('sam_tuning_state'):
+        raise ValueError('required encoder delta missing')
+    tuning = configure(sam, mode)
+    if not loader(sam, tuning, state, required=True):
+        raise ValueError('encoder delta not restored')
+    return tuning
+
+
 def run_model(job):
     validate_job_selection(job)
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / 'v10'))
+    import torch
+    import ct13_training_entry  # Capture immutable original source expansion first.
+    import v10.finetune_totalseg_amos_magic_v10_2_joint as entry
+    from v10_2_sam_finetuning import configure_sam_finetuning, load_sam_tuning_from_checkpoint
+    original_adapter = entry.v10.SAM2MedicalAdapterV10
+    class CompleteCheckpointAdapter(original_adapter):
+        def __init__(self, args, device):
+            super().__init__(args, device)
+            state = torch.load(ROOT / job['checkpoint'], map_location='cpu', weights_only=True, mmap=True)
+            expected_epoch = EPOCHS[SOURCE_SELECTION[job['source']]]
+            if int(state['epoch']) != expected_epoch:
+                raise ValueError('checkpoint epoch mismatch')
+            tuning = restore_encoder_delta(self.sam, args.sam_tuning_mode, state,
+                                           configure_sam_finetuning, load_sam_tuning_from_checkpoint)
+            named = dict(self.sam.named_parameters())
+            stored = state['sam_tuning_state']['image_encoder']
+            for name in tuning.encoder_names:
+                if not torch.equal(named[name].detach().cpu(), stored[name].to(dtype=named[name].dtype)):
+                    raise ValueError(f'encoder delta tensor mismatch: {name}')
+            for parameter in self.sam.parameters():
+                parameter.requires_grad_(False)
+            base.write(Path(job['run']) / 'encoder_restore_audit.json', {
+                'checkpoint': job['checkpoint'], 'epoch': int(state['epoch']),
+                'mode': tuning.mode, 'restored_tensor_count': len(tuning.encoder_names),
+                'all_tensors_exact': True})
+            print(f'ENCODER_RESTORED {len(tuning.encoder_names)} tensors epoch={expected_epoch}', flush=True)
+    entry.v10.SAM2MedicalAdapterV10 = CompleteCheckpointAdapter
     base.WEIGHTS = {'v10_2': job['checkpoint']}
     base.run_model(job)
 
@@ -147,6 +185,11 @@ def merge(out):
         if payload['checkpoint'] != job['checkpoint']:
             raise ValueError('result checkpoint mismatch')
         audit = base.read(run / 'exact_prompt_audit.json')
+        encoder = base.read(run / 'encoder_restore_audit.json')
+        if (encoder['checkpoint'] != job['checkpoint'] or not encoder['all_tensors_exact']
+                or encoder['restored_tensor_count'] <= 0
+                or encoder['epoch'] != EPOCHS[SOURCE_SELECTION[job['source']]]):
+            raise ValueError('encoder restoration audit mismatch')
         selected = base.read(Path(job['prepared']) / 'manifest.json')['tasks']
         base.validate_rows(payload['per_case_class'], selected)
         if {tuple(k) for k in audit['loaded_task_keys']} != {base.key(r) for r in selected}:
