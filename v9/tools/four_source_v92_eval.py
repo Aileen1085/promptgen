@@ -14,7 +14,7 @@ import four_source_eval as base
 ROOT = base.ROOT
 WEIGHT = 'output/sam2_v9_2_ct13_semantic_e380_400_20260928/20260928_200027/epoch360_dice0.7817.pth'
 SOURCE = base.OUT
-OUT = 'output/four_source_v92e360_30case_20261011'
+OUT = 'output/four_source_v92e360_30case_20261011_startupfix'
 PREP_FILES = ('selected_cases.json', 'manifest.json', 'refs.json', 'split.json', 'geometry_audit.json')
 
 
@@ -35,6 +35,11 @@ def link_preparation(source, out):
 def validate_rows(rows, expected, refs):
     base.validate_model_rows(rows, expected, 'v10_2')  # same threshold audit contract
     base.validate_prompt_signatures(rows, refs)
+
+
+def legacy_data_root(split_path):
+    row=base.read(split_path)['datasets']['totalseg']['val'][0]
+    return Path(row['image']).parents[1]
 
 
 def fingerprint(out):
@@ -93,7 +98,7 @@ def run_v9(job, rows, attempt):
         '--gpu',str(job['gpu']),'--sam2-frame-batch-size',str(job['frame_batch']),
         '--base-split-json',str(out/'split.json'),'--checkpoint-dir',str((ROOT/WEIGHT).parent),
         '--v9-2-weights',str(ROOT/WEIGHT),'--allow-uniform-weight','--exact-background-mode','point',
-        '--data-root',str(ROOT/'data/CT'),'--train-end','1']
+        '--data-root',str(legacy_data_root(ROOT/'configs/ct13_v10_2_split_20260928.json')),'--train-end','1']
     import v9_2_extended_protocol as protocol
     import finetune_multisource_sam2_v9_2_precision as original
     protocol.SOURCE_ORDER = original.SOURCE_ORDER = base.SOURCES
