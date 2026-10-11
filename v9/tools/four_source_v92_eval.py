@@ -14,7 +14,7 @@ import four_source_eval as base
 ROOT = base.ROOT
 WEIGHT = 'output/sam2_v9_2_ct13_semantic_e380_400_20260928/20260928_200027/epoch360_dice0.7817.pth'
 SOURCE = base.OUT
-OUT = 'output/four_source_v92e360_30case_20261011_startupfix'
+OUT = 'output/four_source_v92e360_30case_20261011_evalonlyfix'
 PREP_FILES = ('selected_cases.json', 'manifest.json', 'refs.json', 'split.json', 'geometry_audit.json')
 
 
@@ -40,6 +40,12 @@ def validate_rows(rows, expected, refs):
 def legacy_data_root(split_path):
     row=base.read(split_path)['datasets']['totalseg']['val'][0]
     return Path(row['image']).parents[1]
+
+
+def no_training_dataset(_pairs, args, **_kw):
+    if not bool(getattr(args,'validation_only',False)):
+        raise RuntimeError('independent entry must remain validation-only')
+    return []
 
 
 def fingerprint(out):
@@ -98,11 +104,13 @@ def run_v9(job, rows, attempt):
         '--gpu',str(job['gpu']),'--sam2-frame-batch-size',str(job['frame_batch']),
         '--base-split-json',str(out/'split.json'),'--checkpoint-dir',str((ROOT/WEIGHT).parent),
         '--v9-2-weights',str(ROOT/WEIGHT),'--allow-uniform-weight','--exact-background-mode','point',
-        '--data-root',str(legacy_data_root(ROOT/'configs/ct13_v10_2_split_20260928.json')),'--train-end','1']
+        '--data-root',str(legacy_data_root(ROOT/'configs/ct13_v10_2_split_20260928.json')),'--train-end','1',
+        '--v9-2-shared-cache-write-policy','read_only']
     import v9_2_extended_protocol as protocol
     import finetune_multisource_sam2_v9_2_precision as original
     protocol.SOURCE_ORDER = original.SOURCE_ORDER = base.SOURCES
     original.validate_source_ratios = lambda _r: {s:.25 for s in base.SOURCES}
+    original.base.make_dataset = no_training_dataset
     # Generic single-file factory applies identical canonical preprocessing to new sources.
     from v9_family_shared_cache_entry import install_multidataset_factories
     install_multidataset_factories(original.multi)
