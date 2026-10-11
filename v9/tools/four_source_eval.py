@@ -116,6 +116,26 @@ def validate_model_rows(rows,expected,model):
         else:raise ValueError('unknown model')
 
 
+def validate_prompt_signatures(rows,refs):
+    index={task_key(r):r['prompt_sha256'] for r in refs}
+    for row in rows:
+        if row.get('prompt_sha256')!=index.get(task_key(row)):
+            raise ValueError('partial/result prompt signature mismatch; do not overwrite provenance')
+
+
+def active_worker_pids(out,proc_root=Path('/proc')):
+    specs=(Path(out)/'job_specs').resolve();active=[]
+    for path in Path(proc_root).glob('[0-9]*/cmdline'):
+        try:
+            args=path.read_bytes().decode(errors='replace').split('\0')
+            if 'worker' not in args or '--job' not in args:continue
+            if not any(Path(a).name=='four_source_eval.py' for a in args if a):continue
+            job=Path(args[args.index('--job')+1]).resolve()
+            if job.parent==specs:active.append(int(path.parent.name))
+        except (OSError,IndexError,ValueError):continue
+    return sorted(active)
+
+
 def metric_path():
     return ROOT/'utils/metrics.py'
 
@@ -126,6 +146,12 @@ def metric_module():
     return module
 
 
+def consumed_context(args):
+    return dict(full_depth_limit=max(1,int(getattr(args,'prompt_full_depth_limit',96))),
+        core_chunk_size=max(1,int(getattr(args,'prompt_depth_chunk_size',48))),
+        halo_frames=max(0,int(getattr(args,'prompt_depth_halo',24))))
+
+
 def setup():
     os.chdir(ROOT)
     for p in (ROOT,ROOT/'tools',ROOT/'third_party/four_source_eval_deps'):
@@ -134,7 +160,7 @@ def setup():
 
 def nn_modules(gpu='0'):
     folder=ROOT.parent/'nninteractive_test_amos/infer'
-    if not (folder/'infer_3d_point_common.py').is_file():folder=ROOT/'nninteractive_test/infer'
+    if not (folder/'infer_3d_point_common.py').is_file():raise FileNotFoundError('audited complete nninteractive_test_amos bundle missing')
     for p in (folder.parent,folder):sys.path.insert(0,str(p))
     sys.argv=[sys.argv[0],'--gpu',str(gpu),'--shared-case-cache-root',str(ROOT/CACHE)]
     protocol=importlib.import_module('eight_source_adaptive_protocol');protocol.EIGHT_SOURCES=SOURCES
@@ -238,15 +264,21 @@ def prepare(out,data_root):
 def fingerprint(out):
     code=['tools/four_source_eval.py','tools/four_source_data.py','utils/metrics.py','v9_2_adaptive_scribble.py',
           'v10/infer/infer_eight_source_adaptive_v10_2.py','nninteractive_test/infer/prompt_protocol.py']
+    paths=set(ROOT/p for p in code)
+    paths.update(ROOT.glob('*.py'));paths.update((ROOT/'v10').glob('*.py'))
+    for directory in ('model','utils','infer','v10/model','v10/infer','sam2/sam2'):
+        paths.update((ROOT/directory).rglob('*.py'))
+    code=sorted(str(p.relative_to(ROOT)).replace('\\','/') for p in paths)
     bundle=ROOT.parent/'nninteractive_test_amos'
     nn_assets=[bundle/'checkpoints/nnInteractive_v1.0'/p for p in (
         'fold_0/checkpoint_final.pth','plans.json','dataset.json','inference_session_class.json')]
     nn_code=[bundle/'infer'/p for p in ('infer_eight_source_adaptive_nninteractive.py',
-        'eight_source_adaptive_protocol.py','adaptive_prompt_cache.py')]
+        'eight_source_adaptive_protocol.py','adaptive_prompt_cache.py','prompt_protocol.py')]
     return dict(code={p:sha(ROOT/p) for p in code},checkpoint=WEIGHT,checkpoint_sha=sha(ROOT/WEIGHT),
-        nn_assets={str(p.relative_to(ROOT.parent)):sha(p) for p in nn_assets+nn_code},
+        nn_assets={str(p.relative_to(ROOT.parent)).replace('\\','/'):sha(p) for p in nn_assets+nn_code},
         selected_sha=sha(out/'selected_cases.json'),manifest_sha=sha(out/'manifest.json'),
-        prompt_refs_sha=sha(out/'refs.json'),metrics=list(METRICS),threshold=[.35,.75,.60],context=192,
+        prompt_refs_sha=sha(out/'refs.json'),metrics=list(METRICS),threshold=[.35,.75,.60],
+        prompt_context='preserve_checkpoint_consumed_depth_settings',
         foreground='adaptive_coronal_1_sagittal_1',background='2_points_per_plane',ct_cache='read_only_or_memory',
         semantic_text=TEXT,selection_seed=20261011,cases_per_source=30)
 
@@ -310,7 +342,7 @@ def run_v10(job,rows,attempt):
     entry.extended_source_ratios=lambda _args:{s:.25 for s in SOURCES}
     original_bind=entry._bind_v10_2
     def bind(args):
-        args.max_frames=192;args.validation_window_frames=192
+        write(attempt/'runtime_context.json',consumed_context(args))
         return original_bind(args)
     entry._bind_v10_2=bind
     # No raw CT writes, and reuse the one in-memory case across every class.
@@ -369,9 +401,7 @@ def worker(job):
     if rows:
         results=(run_v10 if job['model']=='v10_2' else run_nn)(job,rows,attempt)
         write(attempt/'all_metrics_live.json',{'per_case_class':results});prior.extend(results)
-    refs={task_key(r):r for r in prompt_refs(out,job['tasks'])}
-    for row in prior:
-        ref=refs[task_key(row)];row['prompt_sha256']=ref['prompt_sha256'];row['prompt_cache_name']=ref['prompt_cache_name']
+    validate_prompt_signatures(prior,prompt_refs(out,job['tasks']))
     validate_model_rows(prior,job['tasks'],job['model']);write(run/'complete_metrics.json',{'model':job['model'],'per_case_class':prior})
 
 
@@ -393,12 +423,14 @@ def status(out):
 
 
 def merge(out):
+    bind_protocol(out/'protocol.json',fingerprint(out))
     rows=read(out/'manifest.json')['tasks'];jobs=read(out/'jobs.json');result={}
     for model in ('v10_2','nninteractive'):
         combined=[]
         for j in jobs:
             if j['model']==model:combined.extend(read(out/'jobs'/j['name']/'complete_metrics.json')['per_case_class'])
         validate_model_rows(combined,rows,model)
+        validate_prompt_signatures(combined,prompt_refs(out,rows))
         result[model]={'per_case_class':combined,'task_count':len(combined),'per_source':{}}
         for source in SOURCES:
             values=[r for r in combined if r['source_name']==source]
@@ -413,8 +445,23 @@ def schedule(out,gpus):
     import fcntl
     lock=(out/'scheduler.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     bind_protocol(out/'protocol.json',fingerprint(out))
+    active=active_worker_pids(out)
+    if active:raise RuntimeError(f'existing/orphan workers still alive: {active}; do not duplicate')
+    running={}
+    try:return _schedule_loop(out,gpus,running)
+    finally:
+        # Only the subprocess handles created by this scheduler may be stopped.
+        for p,j,h in running.values():
+            if p.poll() is None:p.terminate()
+        for p,j,h in running.values():
+            try:p.wait(timeout=15)
+            except subprocess.TimeoutExpired:p.kill();p.wait()
+            h.close()
+
+
+def _schedule_loop(out,gpus,running):
     pending=[j for j in read(out/'jobs.json') if not (out/'jobs'/j['name']/'complete_metrics.json').exists()]
-    running={};failed=[]
+    failed=[]
     while pending or running:
         for gpu,(p,j,h) in list(running.items()):
             if p.poll() is None:continue
