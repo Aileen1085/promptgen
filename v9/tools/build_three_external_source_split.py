@@ -19,6 +19,11 @@ def digest(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 
+def signature_identity(rows):
+    if rows is None:return None
+    return sorted((str((ROOT/Path(r['path'])).resolve()),int(r['size_bytes']),int(r['mtime_ns'])) for r in rows)
+
+
 def build_split(records,previous,test_count=20,seed=20261012):
     if int(test_count)<=0:raise ValueError('positive test count required')
     result=dict(schema='three_external_sources_patient_train_test_v1',seed=int(seed),test_count_per_train_source=int(test_count),
@@ -33,7 +38,7 @@ def build_split(records,previous,test_count=20,seed=20261012):
         if not set(prior).issubset(index):raise ValueError('missing prior case: '+source)
         if any(r['source_name']!=source for r in rows+old):raise ValueError('source mismatch')
         for case_id,r in prior.items():
-            if 'source_signatures' in r and r['source_signatures']!=index[case_id].get('source_signatures'):
+            if 'source_signatures' in r and signature_identity(r['source_signatures'])!=signature_identity(index[case_id].get('source_signatures')):
                 raise ValueError('prior source files changed: '+source+'/'+case_id)
         all_ids=set(index)
         if source in TRAIN_SOURCES:
