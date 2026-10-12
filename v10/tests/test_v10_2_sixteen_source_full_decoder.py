@@ -53,5 +53,25 @@ class FullDecoderTests(unittest.TestCase):
         sam.sam_mask_decoder.rows[0][1].requires_grad=False
         with self.assertRaisesRegex(RuntimeError,'Decoder'): module.assert_full_decoder_lora_policy(sam)
 
+    def test_policy_accepts_peft_prefix_and_rejects_memory_thaw(self):
+        from types import SimpleNamespace
+        class Named:
+            def __init__(self,rows): self.rows=rows
+            def named_parameters(self): return iter(self.rows)
+        lora=SimpleNamespace(requires_grad=True)
+        base=SimpleNamespace(requires_grad=False)
+        core=SimpleNamespace(requires_grad=True)
+        memory=SimpleNamespace(requires_grad=False)
+        sam=Named([('base_model.model.image_encoder.blocks.0.qkv.lora_A.default.weight',lora),
+                   ('base_model.model.image_encoder.blocks.0.qkv.base_layer.weight',base),
+                   ('base_model.model.sam_mask_decoder.core_decoder.head.weight',core),
+                   ('base_model.model.memory_attention.weight',memory)])
+        sam.image_encoder=Named([('blocks.0.qkv.lora_A.default.weight',lora),('blocks.0.qkv.base_layer.weight',base)])
+        sam.sam_mask_decoder=Named([('core_decoder.head.weight',core)])
+        self.module().assert_full_decoder_lora_policy(sam)
+        memory.requires_grad=True
+        with self.assertRaisesRegex(RuntimeError,'Unexpected'):
+            self.module().assert_full_decoder_lora_policy(sam)
+
 
 if __name__=='__main__': unittest.main()

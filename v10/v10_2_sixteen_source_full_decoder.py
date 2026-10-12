@@ -56,8 +56,8 @@ def assert_full_decoder_lora_policy(sam):
     if not core or not all(p.requires_grad for _, p in core):
         raise RuntimeError('Decoder core parameters must all be trainable')
     for name, p in sam.named_parameters():
-        if p.requires_grad and not (name.startswith('image_encoder.')
-                or name.startswith('sam_mask_decoder.')):
+        parts=name.split('.')
+        if p.requires_grad and not ('image_encoder' in parts or 'sam_mask_decoder' in parts):
             raise RuntimeError('Unexpected trainable SAM parameter: '+name)
 
 
