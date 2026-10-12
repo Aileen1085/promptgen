@@ -105,5 +105,23 @@ class SixteenSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'geometry'):
             audit_record({}, native_reader=lambda r: (object(),object(),{'grid_verified':False}))
 
+    def test_best_gate_rejects_nan_and_wrong_epoch(self):
+        import v10_2_sixteen_source_train as entry
+        self.assertTrue(hasattr(entry,'assert_best_state'), 'finite audited best gate missing')
+        for epoch,score in [(10,float('nan')),(9,.7881604375711181)]:
+            with self.assertRaises(ValueError):
+                entry.assert_best_state({'epoch':epoch,'validation_metrics':{'selection':{'score':score}}})
+
+    def test_native_paths_portable_and_do_not_change_embedded_names(self):
+        import prepare_v10_2_sixteen_source as preparation
+        self.assertTrue(hasattr(preparation,'portable_record'), 'portable native records missing')
+        root = Path.cwd()
+        record = {'source_name':'pengwin', 'parquet_path':str(root/'data'/'a.parquet'),
+            'image_name':'embedded/a_image.nii.gz','source_signatures':[{'path':str(root/'data'/'a.parquet'),'size_bytes':1,'mtime_ns':1}]}
+        result = preparation.portable_record(record,root)
+        self.assertEqual(result['parquet_path'],'data/a.parquet')
+        self.assertEqual(result['source_signatures'][0]['path'],'data/a.parquet')
+        self.assertEqual(result['image_name'],record['image_name'])
+
 
 if __name__ == '__main__': unittest.main()

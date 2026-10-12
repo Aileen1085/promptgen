@@ -20,6 +20,14 @@ OLD_SPLIT = 'configs/ct13_v10_2_split_20260928.json'
 OLD_VALIDATION = 'configs/ct13_v10_2_validation_four_new_sources4_classweight_v3_20260928.json'
 
 
+def assert_best_state(state):
+    score = float(state['validation_metrics']['selection']['score'])
+    if (int(state.get('epoch', -1)) != 10 or not math.isfinite(score)
+            or abs(score-.7881604375711181) > 1e-9):
+        raise ValueError('requires finite audited best A E10')
+    return score
+
+
 def training_args(source, *, initialization, output, gpu, split, smoke=False):
     values = copy.deepcopy(source)
     values.update(epochs=1 if smoke else 40, lr_schedule_epochs=40,
@@ -74,11 +82,11 @@ def main():
         if {r['case_id'] for r in rows['train']} != set(external['datasets'][source]['train']) or rows['val']:
             raise ValueError('external training partition mismatch')
     initialization = Path(cli.initialization).resolve()
+    if sha256_file(initialization) != sha256_file(ROOT/INITIALIZATION):
+        raise ValueError('initialization differs from audited best A E10 weights')
     state = torch.load(initialization, map_location='cpu', mmap=True, weights_only=False)
     assert_protocol(state['validation_metrics'])
-    score = float(state['validation_metrics']['selection']['score'])
-    if abs(score - .7881604375711181) > 1e-9:
-        raise ValueError('requires audited best A E10; no unverified initialization')
+    score = assert_best_state(state)
     output = Path(cli.output).resolve()
     if ROOT not in output.parents: raise ValueError('output must stay under project')
     args = training_args(state['args'], initialization=initialization, output=output,

@@ -40,13 +40,25 @@ def audit_record(record, native_reader=None):
     return audit
 
 
+def portable_record(record, root=ROOT):
+    value = copy.deepcopy(record)
+    def relative(path):
+        return Path(os.path.relpath(Path(path).resolve(), root)).as_posix()
+    for key in ('image_path','label_path','parquet_path','seg_path'):
+        if key in value: value[key] = relative(value[key])
+    if 'ct_paths' in value: value['ct_paths'] = [relative(p) for p in value['ct_paths']]
+    if 'source_signatures' in value:
+        for signature in value['source_signatures']: signature['path'] = relative(signature['path'])
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-root', default='../data')
     parser.add_argument('--external-split', default='configs/graz_pengwin_adrenal_test20_train_rest_v1_20261012.json')
     parser.add_argument('--base-split', default='configs/ct13_v10_2_split_20260928.json')
     parser.add_argument('--out', default='configs/v10_2_sixteen_source_train_20261012.json')
-    parser.add_argument('--reference-root', default='v10/.cache/totalseg_sam2_promptgen_v10_prompt_roi_full_v1/metadata/native_training_v1')
+    parser.add_argument('--reference-root', default='v10/.cache/totalseg_sam2_promptgen_v10_prompt_roi_full_v1/metadata/native_training_v2_portable')
     parser.add_argument('--workers', type=int, default=4)
     args = parser.parse_args(); os.chdir(ROOT)
     if not 1 <= args.workers <= 4: raise ValueError('audit workers must be1..4')
@@ -60,6 +72,25 @@ def main():
     if ROOT not in references.parents:
         raise ValueError('references must stay under project')
     found = discover(Path(args.data_root).resolve())
+    for source in TRAIN_SOURCES:
+        inventory = hashlib.sha256(json.dumps(sorted(found[source],key=lambda r:r['case_id']),
+            sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if inventory != external['datasets'][source]['inventory_sha256']:
+            raise ValueError('native inventory differs from frozen external split: '+source)
+    found = {s:[portable_record(r) for r in rows] for s,rows in found.items()}
+    # Existing preliminary audits contain only lightweight geometry. Reuse them
+    # after portable signature comparison; never rewrite their old references.
+    legacy = ROOT/'v10/.cache/totalseg_sam2_promptgen_v10_prompt_roi_full_v1/metadata/native_training_v1'
+    for source in TRAIN_SOURCES:
+        for record in found[source]:
+            if record['case_id'] not in external['datasets'][source]['train']: continue
+            previous = legacy/source/record['case_id']/'geometry.json'
+            if previous.is_file():
+                audit = json.loads(previous.read_text())
+                audit['source_signatures'] = portable_record({'source_signatures':audit['source_signatures']})['source_signatures']
+                if audit['source_signatures'] != record['source_signatures']:
+                    raise ValueError('preliminary audit source signatures differ')
+                write_once(references/source/record['case_id']/'geometry.json',audit)
     catalog = copy.deepcopy(split['class_catalog'])
     executor = ProcessPoolExecutor(max_workers=args.workers)
     futures = {}
