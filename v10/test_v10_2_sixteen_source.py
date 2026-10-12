@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'tools'))
 
 
 def external():
@@ -94,6 +95,15 @@ class SixteenSourceTests(unittest.TestCase):
         self.assertEqual(args.epochs, 40)
         self.assertEqual(args.validate_every, 10)
         self.assertGreater(args.sam_encoder_unfreeze_epoch, args.epochs)
+
+    def test_native_audit_returns_metadata_not_volume(self):
+        import prepare_v10_2_sixteen_source as preparation
+        self.assertTrue(hasattr(preparation, 'audit_record'), 'native audit interface missing')
+        audit_record = preparation.audit_record
+        audit = {'grid_verified':True,'label_values':[0,1],'source_signatures':[]}
+        self.assertEqual(audit_record({}, native_reader=lambda r: (object(),object(),audit)), audit)
+        with self.assertRaisesRegex(ValueError, 'geometry'):
+            audit_record({}, native_reader=lambda r: (object(),object(),{'grid_verified':False}))
 
 
 if __name__ == '__main__': unittest.main()
