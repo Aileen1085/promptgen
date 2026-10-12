@@ -37,6 +37,7 @@ def training_args(source, *, initialization, output, gpu, split, smoke=False):
         multidataset_split_json=str(split), sam_encoder_unfreeze_epoch=1 if smoke else 6,
         sam_tuning_mode='encoder_lora_full_decoder', sam_encoder_lora_rank=8,
         sam_encoder_lora_alpha=16, encoder_lr=5e-7, decoder_lr=2e-7,
+        decoder_transformer_lr=None, decoder_head_lr=None,
         amp=True, object_score_gate=False, v10_2_poscap_skip_validation=bool(smoke))
     if smoke: values['lr_warmup_epochs'] = 1
     return argparse.Namespace(**values)

@@ -13,7 +13,8 @@ class FullDecoderTests(unittest.TestCase):
         return entry
 
     def test_staged_lora_fresh_model_only_initialization(self):
-        a=self.module().training_args({'resume_checkpoint':'old','lr_warmup_epochs':2},
+        a=self.module().training_args({'resume_checkpoint':'old','lr_warmup_epochs':2,
+            'decoder_transformer_lr':9e-4,'decoder_head_lr':9e-4},
             initialization='A.pth',output='new',gpu=3,split='fixed.json')
         self.assertEqual(a.resume_checkpoint,'')
         self.assertEqual(a.prompt_generator_checkpoint,'A.pth')
@@ -22,6 +23,8 @@ class FullDecoderTests(unittest.TestCase):
         self.assertEqual(a.sam_tuning_mode,'encoder_lora_full_decoder')
         self.assertEqual((a.sam_encoder_lora_rank,a.sam_encoder_lora_alpha),(8,16))
         self.assertEqual((a.encoder_lr,a.decoder_lr),(5e-7,2e-7))
+        self.assertIsNone(a.decoder_transformer_lr)
+        self.assertIsNone(a.decoder_head_lr)
 
     def test_smoke_forces_real_lora_update(self):
         a=self.module().training_args({'lr_warmup_epochs':2},initialization='A',output='smoke',gpu=3,split='s',smoke=True)
