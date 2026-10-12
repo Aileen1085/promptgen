@@ -3,6 +3,7 @@ import importlib.util
 import sys
 import tempfile
 import json
+import threading
 import unittest
 from pathlib import Path
 
@@ -122,6 +123,25 @@ class SixteenSourceTests(unittest.TestCase):
         self.assertEqual(result['parquet_path'],'data/a.parquet')
         self.assertEqual(result['source_signatures'][0]['path'],'data/a.parquet')
         self.assertEqual(result['image_name'],record['image_name'])
+
+    def test_prefetch_and_main_native_reads_are_serialized(self):
+        from v10_2_native_reference import NativeReferenceLoader
+        first = threading.Event(); second = threading.Event(); release = threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            paths=[]
+            for case in ('a','b'):
+                p=Path(tmp)/case; p.mkdir(); f=p/'image.nii.gz'
+                f.write_text(json.dumps({'native_training_reference_v1':True,'source_name':'graz','case_id':case}))
+                paths.append(f)
+            def reader(record):
+                if record['case_id']=='a': first.set(); release.wait(2)
+                else: second.set()
+                return record['case_id'],'label',{}
+            loader=NativeReferenceLoader(tmp,native_loader=reader)
+            a=threading.Thread(target=loader.load,args=(paths[0],)); b=threading.Thread(target=loader.load,args=(paths[1],))
+            a.start(); self.assertTrue(first.wait(1)); b.start()
+            try: self.assertFalse(second.wait(.1),'concurrent decoding breaks bounded cache ownership')
+            finally: release.set(); a.join(); b.join()
 
 
 if __name__ == '__main__': unittest.main()

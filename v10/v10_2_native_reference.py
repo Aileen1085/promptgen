@@ -1,6 +1,7 @@
 """Scoped JSON references to native CT pairs, with bounded in-memory loading."""
 from __future__ import annotations
 import json
+import threading
 from pathlib import Path
 from v10_2_sixteen_source_protocol import native_signature
 
@@ -9,6 +10,7 @@ class NativeReferenceLoader:
     def __init__(self, reference_root, native_loader=None):
         self.root = Path(reference_root).resolve()
         self.current = self.pair = self.original = None
+        self.lock = threading.RLock()
         if native_loader is None:
             from four_source_data import load_pair
             native_loader = load_pair
@@ -30,10 +32,12 @@ class NativeReferenceLoader:
         if record is None:
             return self.original(path, *args, **kwargs)
         identity = record['source_name'], record['case_id']
-        if identity != self.current:
-            self.pair = self.native_loader(record)
-            self.current = identity
-        return self.pair[0 if Path(path).name == 'image.nii.gz' else 1]
+        with self.lock:
+            if identity != self.current:
+                self.pair = self.native_loader(record)
+                self.current = identity
+            result = self.pair[0 if Path(path).name == 'image.nii.gz' else 1]
+        return result
 
     def install(self):
         import nibabel as nib
