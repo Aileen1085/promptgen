@@ -83,5 +83,17 @@ class SixteenSourceTests(unittest.TestCase):
             self.assertEqual(calls, ['a','b'])
             self.assertEqual(loader.current, ('graz','b'))
 
+    def test_training_args_do_not_resume_old_optimizer(self):
+        self.assertIsNotNone(importlib.util.find_spec('v10_2_sixteen_source_train'), 'training entry missing')
+        from v10_2_sixteen_source_train import training_args
+        args = training_args({'resume_checkpoint':'old', 'lr_warmup_epochs':2},
+            initialization='best.pth', output='new', gpu=2, split='new.json', smoke=False)
+        self.assertEqual(args.resume_checkpoint, '')
+        self.assertEqual(args.prompt_generator_checkpoint, 'best.pth')
+        self.assertEqual(args.train_cases_per_epoch, 250)
+        self.assertEqual(args.epochs, 40)
+        self.assertEqual(args.validate_every, 10)
+        self.assertGreater(args.sam_encoder_unfreeze_epoch, args.epochs)
+
 
 if __name__ == '__main__': unittest.main()
