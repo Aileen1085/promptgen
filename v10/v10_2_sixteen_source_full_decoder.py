@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 for directory in (ROOT, ROOT/'v10', ROOT/'tools', ROOT/'third_party/four_source_eval_deps'):
     sys.path.insert(0, str(directory))
 from v10_2_sixteen_source_protocol import SOURCE_ORDER, source_counts, validate_external_split
+from v10_2_sixteen_source_validation import (
+    load_validation_view, assert_validation_metrics, VALIDATION_SPLIT, VALIDATION_TASKS)
 
 INITIALIZATION = 'v10/output/v10_2_ct13_e490_decoder_frozen_control_10_20261005/20261005_155255/epoch010.pth'
 TRAIN_SPLIT = 'configs/v10_2_sixteen_source_train_20261012.json'
@@ -70,6 +72,8 @@ def main():
     parser.add_argument('--gpu', type=int, required=True)
     parser.add_argument('--expected-gpu-uuid', required=True)
     parser.add_argument('--smoke', action='store_true')
+    parser.add_argument('--legacy-retention-validation', action='store_true',
+                        help='Explicitly retain historical CT13-only validation instead of CT16 val4')
     cli = parser.parse_args(); os.chdir(ROOT)
     os.environ['CUDA_VISIBLE_DEVICES'] = str(cli.gpu)
     os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF','expandable_segments:True')
@@ -102,6 +106,11 @@ def main():
         rows = split['datasets'][source]
         if {r['case_id'] for r in rows['train']} != set(external['datasets'][source]['train']) or rows['val']:
             raise ValueError('external training partition mismatch')
+    eval_split, eval_validation = ((retention, validation) if cli.legacy_retention_validation
+                                  else load_validation_view(cli.split))
+    validation_path = OLD_VALIDATION if cli.legacy_retention_validation else VALIDATION_TASKS
+    validation_scope = ('legacy CT13 retention only' if cli.legacy_retention_validation
+                        else eval_split['validation_scope'])
     initialization = Path(cli.initialization).resolve()
     if sha256_file(initialization) != sha256_file(ROOT/INITIALIZATION):
         raise ValueError('initialization differs from audited best A E10 weights')
@@ -112,6 +121,7 @@ def main():
     if ROOT not in output.parents: raise ValueError('output must stay under project')
     args = training_args(state['args'], initialization=initialization, output=output,
                          gpu=cli.gpu, split=cli.split, smoke=cli.smoke)
+    args.multidataset_validation_json = validation_path
     for key, expected in [('prompt_lr',2.5e-7),('adapter_lr',5e-7),('memory_adapter_lr',5e-7),('ema_decay',.9995)]:
         if getattr(args,key) != expected: raise ValueError('unexpected inherited '+key)
     device = torch.device('cuda:0'); torch.cuda.set_device(device)
@@ -123,8 +133,10 @@ def main():
     save_json_once(output/'training_manifest.json', dict(initialization=str(initialization.relative_to(ROOT)),
         initialization_sha256=sha256_file(initialization), initialization_retention_dice=score,
         split=cli.split, split_sha256=sha256_file(cli.split), external_split_sha256=split['external_split_sha256'],
-        validation=OLD_VALIDATION, validation_sha256=VALIDATION_SHA256,
-        validation_scope=split['validation_scope'], test_used_for_selection=False, fumpe_training=False,
+        validation=validation_path, validation_sha256=sha256_file(validation_path),
+        validation_scope=validation_scope, test_used_for_selection=False, fumpe_training=False,
+        selected_test_cases_promoted_to_validation=not cli.legacy_retention_validation,
+        validation_split=OLD_SPLIT if cli.legacy_retention_validation else VALIDATION_SPLIT,
         source_counts=source_counts(), epochs=args.epochs, cases_per_epoch=args.train_cases_per_epoch,
         physical_gpu=cli.gpu, gpu_uuid=actual, encoder_base_frozen=True,
         encoder_lora_trainable=True, encoder_unfreeze_epoch=args.sam_encoder_unfreeze_epoch,
@@ -149,26 +161,31 @@ def main():
                   {s:n/250 for s,n in source_counts().items()})
         bound_args.multidataset_sampling_ratios = ratios
         bound_args.label_names = {int(r['global_class_id']):r['class_name'] for r in split['class_catalog']}
-        bound_args.validation_na_class_ids = (40,41)
+        bound_args.validation_na_class_ids = tuple(
+            int(r['global_class_id']) for r in eval_split['class_catalog'] if r.get('not_applicable'))
         bound_args.num_classes = len(bound_args.label_names)
-        bound_args.val_num_classes = len(retention['class_catalog'])
+        bound_args.val_num_classes = len(eval_split['class_catalog'])
 
     def evaluate(*values, **keywords):
         nonlocal baseline_checked
         old = joint._PROTOCOL
-        # Retention metric stays bit-identical: do not disguise train/test metrics as validation.
-        joint._PROTOCOL = (retention, validation)
+        # Independent validation view; the training partitions/catalog remain unchanged.
+        joint._PROTOCOL = (eval_split, eval_validation)
         try: result = native_evaluate(*values, **keywords)
         finally: joint._PROTOCOL = old
-        assert_protocol(result[2])
+        if cli.legacy_retention_validation:
+            assert_protocol(result[2])
+        else:
+            assert_validation_metrics(result[2], eval_validation)
         if not math.isfinite(float(result[0])): raise ValueError('nonfinite retention metric')
         if not baseline_checked:
-            if abs(float(result[0])-score) > .002:
+            if cli.legacy_retention_validation and abs(float(result[0])-score) > .002:
                 raise ValueError('best A E10 baseline reproduction failed')
             baseline_checked = True
         result[2]['training_source_count'] = 16
-        result[2]['validation_scope'] = split['validation_scope']
-        result[2]['new_source_test_evaluated'] = False
+        result[2]['validation_scope'] = validation_scope
+        result[2]['new_source_validation_evaluated'] = not cli.legacy_retention_validation
+        result[2]['new_source_test_evaluated'] = False  # remaining heldout16/source never used
         return result
 
     def configure(sam, mode):
