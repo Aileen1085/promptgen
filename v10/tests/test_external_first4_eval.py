@@ -15,6 +15,14 @@ class SelectionTests(unittest.TestCase):
     def test_short_list_rejected(self):
         x=self.fixture(); x['datasets']['graz']['test']=['a']
         with self.assertRaises(ValueError): select_cases(x)
+    def test_all_twenty_preserves_every_case(self):
+        x=self.fixture()
+        for row in x['datasets'].values(): row['test']=[str(i) for i in range(20)]
+        self.assertEqual(select_cases(x, count=20)['graz'], x['datasets']['graz']['test'])
+    def test_twenty_rejects_incomplete_test_set(self):
+        with self.assertRaises(ValueError): select_cases(self.fixture(), count=20)
+    def test_nonpositive_count_rejected(self):
+        with self.assertRaises(ValueError): select_cases(self.fixture(), count=0)
     def test_adapter_parameters_included_in_ema(self):
         class Parameter:
             requires_grad=False

@@ -1,4 +1,4 @@
-"""Fixed first-four heldout native cases; reuse CT16 training evaluation unchanged."""
+"""Fixed heldout native cases; reuse CT16 training evaluation unchanged."""
 from __future__ import annotations
 import argparse
 import copy
@@ -13,16 +13,17 @@ import sys
 SOURCES = ('graz', 'pengwin', 'adrenal')
 ROOT = Path(__file__).resolve().parents[1]
 
-def select_cases(split):
+def select_cases(split, count=4):
+    if count < 1: raise ValueError('positive case count required')
     selected = {}
     for source in SOURCES:
         row = split['datasets'][source]
         cases = list(row['test'])
-        if len(cases) < 4 or len(set(cases)) != len(cases):
-            raise ValueError('at least four unique heldout cases required')
+        if len(cases) < count or len(set(cases)) != len(cases):
+            raise ValueError('requested number of unique heldout cases required')
         if set(cases) & set(row['train']):
             raise ValueError('training/test overlap')
-        selected[source] = cases[:4]
+        selected[source] = cases[:count]
     return selected
 
 def sha(path):
@@ -46,6 +47,7 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--gpu', type=int, required=True)
     parser.add_argument('--expected-gpu-uuid', required=True)
+    parser.add_argument('--cases-per-source', type=int, default=4)
     cli = parser.parse_args()
     os.chdir(ROOT)
     for path in (ROOT, ROOT/'v10', ROOT/'tools', ROOT/'third_party/four_source_eval_deps'):
@@ -65,7 +67,7 @@ def main():
     from v10_training_ema import TrainableParameterEMA
     external_path = Path('configs/graz_pengwin_adrenal_test20_train_rest_v1_20261012.json')
     external = json.loads(external_path.read_text())
-    chosen = select_cases(external)
+    chosen = select_cases(external, cli.cases_per_source)
     out = Path(cli.output).resolve()
     if ROOT not in out.parents: raise ValueError('output must be inside project')
     out.mkdir(parents=True, exist_ok=False)
@@ -126,7 +128,7 @@ def main():
     ema = TrainableParameterEMA({'prompt':prompt,'sam':adapter.sam},args.ema_decay)
     ema.load_state_dict(state['ema_state'])
     manifest = dict(checkpoint=cli.checkpoint, checkpoint_sha256=sha(cli.checkpoint), epoch=state['epoch'],
-        selected_cases=chosen, task_count=len(tasks), absent_case_classes=absent,
+        selected_cases=chosen, cases_per_source=cli.cases_per_source, task_count=len(tasks), absent_case_classes=absent,
         external_split_sha256=sha(external_path), weight_mode='EMA', thresholds=list(args.validation_thresholds),
         foreground=args.val_foreground_mode, background=args.val_background_mode, gpu_uuid=uuid,
         scope='one fixed E40 evaluation; no split mutation or checkpoint selection')
