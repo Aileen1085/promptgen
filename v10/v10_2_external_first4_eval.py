@@ -31,6 +31,11 @@ def sha(path):
         for chunk in iter(lambda: f.read(4*1024*1024), b''): h.update(chunk)
     return h.hexdigest()
 
+def enable_adapter_ema(decoder):
+    # Match the checkpoint EMA membership; evaluation remains torch.no_grad().
+    for module in (decoder.prompt_3d_adapter, decoder.prompt_memory_adapter):
+        for parameter in module.parameters(): parameter.requires_grad = True
+
 def save(path, value):
     with Path(path).open('x', encoding='utf-8') as f:
         json.dump(value, f, ensure_ascii=False, indent=2)
@@ -114,6 +119,7 @@ def main():
     adapter = joint.v10.SAM2MedicalAdapterV10(args, device).to(device)
     tuning = configure_sam_finetuning(adapter.sam, args.sam_tuning_mode)
     freeze_control_parameters(adapter.sam, 'frozen')
+    enable_adapter_ema(adapter.sam.sam_mask_decoder)
     prompt = joint.make_prompt_v10_2(args, adapter, device); prompt._v10_2_args = args
     loaded = joint.load_init_v10_2(cli.checkpoint,prompt,adapter.sam.sam_mask_decoder)
     load_sam_tuning_from_checkpoint(adapter.sam,tuning,loaded,required=True)
