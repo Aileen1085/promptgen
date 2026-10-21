@@ -20,7 +20,7 @@ DONOR='v10/output/v10_2_ct13_e490_decoder_frozen_control_10_20261005/20261005_15
 DONOR_SHA='d3eefcbb8cbe99e30e718c2e8ef842dc3c1957272e0e8120a1fa98a7e44e0ac9'
 ARCH='sammed3d_turbo_promptgen_v102_amos_v1'
 REFERENCE='output/ct13_full_val_v92e360_v102e490_20261005'
-OUT='output/sammed3d_promptgen_e230_amos_full1485_20261021'
+OUT='output/sammed3d_promptgen_e230_amos_full1485_20261021_restorefix'
 
 
 def sha(path):
@@ -43,6 +43,10 @@ def validate_checkpoint(s,split_sha):
     for k,v in dict(epoch=230,architecture=ARCH,split_sha256=split_sha,
                     turbo_sha256=CORE_SHA,promptgen_donor_sha256=DONOR_SHA).items():
         if s.get(k)!=v:raise ValueError('checkpoint identity mismatch: '+k)
+
+
+def learned_prompt_keys(parameter_flags,persistent_state_keys):
+    return {k for k in persistent_state_keys if k not in parameter_flags or parameter_flags[k]}
 
 
 def append_exact_background(foreground_cube_points,background_cube_points):
@@ -167,7 +171,7 @@ def load_model(out):
     validate_checkpoint(state,sha(ROOT/base.SPLIT))
     prompt=factory.load_v102_promptgen(ROOT/DONOR,'cuda:0')
     model=backend.SAMMedPromptGen(backend.load_core(ROOT/'third_party/SAM_Med3D_official_20261007',ROOT/CORE,'cuda:0'),prompt).cuda()
-    expected={n for n,p in prompt.named_parameters() if p.requires_grad}|set(dict(prompt.named_buffers()))
+    expected=learned_prompt_keys({n:p.requires_grad for n,p in prompt.named_parameters()},prompt.state_dict())
     if expected!=set(state['prompt_generator']):raise ValueError('learned PromptGen checkpoint membership mismatch')
     result=prompt.load_state_dict(state['prompt_generator'],strict=False)
     if result.unexpected_keys:raise ValueError('unexpected PromptGen keys')
