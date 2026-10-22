@@ -20,6 +20,10 @@ def worker_command(command, model):
     return result
 
 
+def subprocess_proxy(spawn):
+    return SimpleNamespace(Popen=spawn,check_output=subprocess.check_output,STDOUT=subprocess.STDOUT)
+
+
 def main():
     sys.path.insert(0,str(ROOT))
     from tools import magic_promptgen_three_backbones as e
@@ -43,7 +47,7 @@ def main():
         return original(worker_command(command,job['model']),**kwargs)
     # Isolate only this base module's subprocess reference; GPU queries retain
     # their real check_output and cannot be misinterpreted as model workers.
-    e.base.subprocess=SimpleNamespace(Popen=spawn,check_output=subprocess.check_output)
+    e.base.subprocess=subprocess_proxy(spawn)
     e.base.__file__=str(ENTRY);e.base.merge=e.merge
     e.base.launch(out,list(map(int,a.gpus.split(','))))
 
