@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools import ct13_full_validation_eval as base
 
-OUT = 'output/magic_promptgen_three_backbones35_20261022'
+OUT = 'output/magic_promptgen_three_backbones35_20261022_planefix'
 REFERENCE = 'output/native_sam2_medsam2_ct13_full6094_20261007_gridfix'
 BG_CACHE = 'output/native_sam2_amos_sparse_bg_pilot_20261007/background_scribbles_light'
 ASSETS = {
@@ -49,6 +49,23 @@ def map_background(points, source_affine, target_affine):
     return np.rint(mapped).astype(np.int32)
 
 
+def mapped_plane_metadata(raw_slices, source_affine, target_affine):
+    """Plane normals come from cached metadata, never inferred from a thin line."""
+    import numpy as np
+    transform=np.linalg.solve(np.asarray(target_affine),np.asarray(source_affine))
+    mapped={}
+    for original,(axis,index) in enumerate(zip((2,1),raw_slices)):
+        normal=int(np.argmax(np.abs(transform[:3,axis])))
+        row=transform[normal,:3].copy();scale=row[axis];row[axis]=0
+        coordinate=scale*int(index)+transform[normal,3]
+        if (normal not in (1,2) or not np.allclose(row,0,atol=1e-5)
+                or abs(abs(scale)-1)>1e-5 or abs(coordinate-round(coordinate))>1e-4):
+            raise ValueError('not an axis-preserving physical plane transformation')
+        if normal in mapped:raise ValueError('orthogonal planes collapsed')
+        mapped[normal]=(int(round(coordinate)),original)
+    return (mapped[2][0],mapped[1][0]),(mapped[2][1],mapped[1][1])
+
+
 def validate_background(bg, truth, slices):
     import numpy as np
     bg = np.asarray(bg)
@@ -72,11 +89,16 @@ def signature(out):
     from tools import segvol_promptgen_amos_eval as sg
     weights = [sm.WEIGHT, sm.CORE, sm.DONOR, vi.CHECKPOINT, vi.CONSTRUCTION, vi.CORE,
                str(sg.WEIGHT.relative_to(ROOT)), str(sg.CONSTRUCTION.relative_to(ROOT)), str(sg.OFFICIAL.relative_to(ROOT))]
-    return dict(code={str(p.relative_to(ROOT)):sha(p) for p in files},
+    result=dict(code={str(p.relative_to(ROOT)):sha(p) for p in files},
         weights={p:sha(ROOT/p) for p in weights}, manifest=sha(out/'manifest.json'),
         prompts={t['prompt_cache_name']:sha(ROOT/base.CACHE/'metadata/shared_adaptive_prompt_v1/magic'/t['prompt_cache_name'])
                  for t in base.read(out/'manifest.json')['tasks']},
-        protocol='MAGIC35 rawNRRD-to-model once; FGadaptive+4BGpoint; expanded semantic; dynamic.35-.75 fallback.60; fullmask10')
+        protocol='MAGIC35 rawNRRD-to-model once; cached plane normals; FGadaptive+4BGpoint; expanded semantic; dynamic.35-.75 fallback.60; fullmask10')
+    if (out/'reuse_audit.json').exists():
+        for path,expected in base.read(out/'reuse_audit.json')['source_files'].items():
+            if sha(ROOT/path)!=expected:raise ValueError('readonly reuse source changed')
+        result['reuse']={name:sha(out/name) for name in ('reuse_audit.json','reused_metrics.json')}
+    return result
 
 
 def verify(out):
@@ -84,16 +106,61 @@ def verify(out):
         raise ValueError('changed weights/code/prompt signatures; refusing mixed results')
 
 
-def prepare(out):
+def prepare(out, reuse_from=None):
     if out.exists(): raise FileExistsError('new output required; preserve historical outputs')
     rows = sorted([r for r in base.read(ROOT/REFERENCE/'manifest.json')['tasks'] if r['source_name']=='magic'], key=base.key)
     validate_scope(rows, base.read(ROOT/base.SPLIT))
     base.write(out/'manifest.json', base.manifest_payload(rows))
+    reused={model:[] for model in ASSETS}
+    if reuse_from:
+        import numpy as np
+        old=ROOT/reuse_from;oldp=base.read(old/'protocol.json');source_files={}
+        if oldp['code']['tools/magic_promptgen_three_backbones.py']!='eaea564ed41cb129a2cd46ce41103bf44315a7c08243fdf05bd3d10c836f34d7':
+            raise ValueError('unapproved predecessor entry signature')
+        for name,value in oldp['code'].items():
+            if name!='tools/magic_promptgen_three_backbones.py' and sha(ROOT/name)!=value:raise ValueError('old dependency changed')
+        for name,value in oldp['weights'].items():
+            if sha(ROOT/name)!=value:raise ValueError('old checkpoint changed')
+        if base.read(old/'manifest.json')['tasks']!=rows:raise ValueError('reuse task scope mismatch')
+        from tools import native_ct13_eval as native
+        physical=native.base_module()
+        for j in base.read(old/'jobs.json'):
+            run=old/'jobs'/j['name'];path=run/'complete_metrics.json'
+            if not path.exists():path=run/'all_metrics_live.json'
+            if not path.exists():continue
+            model_audit=run/'model_audit.json'
+            if not base.read(model_audit)['strict_effective_modules_exact']:raise ValueError('old model restore audit failed')
+            source_files[str(path.relative_to(ROOT))]=sha(path)
+            source_files[str(model_audit.relative_to(ROOT))]=sha(model_audit)
+            part=base.read(path)['per_case_class']
+            expected=base.read(Path(j['prepared'])/'manifest.json')['tasks']
+            base.validate_rows(part,expected[:len(part)])
+            for row in part:
+                a=row['prompt_audit'];p=ROOT/base.CACHE/'metadata/shared_adaptive_prompt_v1/magic'/row['prompt_cache_name']
+                if sha(p)!=a['prompt_cache_sha256'] or sha(p)!=oldp['prompts'][row['prompt_cache_name']]:raise ValueError('reused prompt changed')
+                with np.load(p) as z:
+                    slices,order=mapped_plane_metadata(z['slices'],a['source_affine_dhw_ras'],a['target_affine_dhw_ras'])
+                    shape=tuple(map(int,z['shape_dhw']))
+                    supports=[np.unpackbits(z[n],count=int(np.prod(shape)),bitorder='little').reshape(shape).astype(bool)
+                              for n in ('coronal_bits','sagittal_bits')]
+                supports=[physical.reorient_grid(s,np.asarray(a['source_affine_dhw_ras']),np.asarray(a['target_affine_dhw_ras']),tuple(a['target_shape_dhw'])) for s in supports]
+                old_order=(0,1) if np.all(np.argwhere(supports[0])[:,2]==slices[0]) else (1,0)
+                if tuple(a['plane_slices'])!=slices or any(not np.array_equal(supports[x],supports[y]) for x,y in zip(old_order,order)):
+                    continue  # Wrong/ambiguous plane would be re-predicted, never silently reused.
+                reused[j['model']].append(row)
+        source_files[str((old/'protocol.json').relative_to(ROOT))]=sha(old/'protocol.json')
+        base.write(out/'reused_metrics.json',reused)
+        base.write(out/'reuse_audit.json',dict(source_files=source_files,
+            model_counts={k:len(v) for k,v in reused.items()},criterion='exact plane indices, supports, prompt and checkpoint SHA; old outputs readonly'))
     jobs = []
     # First case is a complete, independently retained real-data smoke for each model.
     for model in ASSETS:
-        parts = [rows[:1]] + [base.case_shard(rows[1:], 4, i) for i in range(4)]
+        done={base.key(r) for r in reused[model]};pending=[r for r in rows if base.key(r) not in done]
+        smoke=[r for r in pending if r['case_id']=='liver_cyst/51'] or pending[:1]
+        rest=[r for r in pending if base.key(r) not in {base.key(t) for t in smoke}]
+        parts=[smoke]+[base.case_shard(rest,4,i) for i in range(4)] if rest else [smoke]
         for i, part in enumerate(parts):
+            if not part:continue
             name = model+('_smoke' if i==0 else '_s%02d'%i)
             prepared = out/'prepared'/name
             base.write(prepared/'manifest.json', base.manifest_payload(part))
@@ -101,7 +168,7 @@ def prepare(out):
                              task_count=len(part), frame_batch=1, attempt=0))
     base.write(out/'jobs.json', jobs)
     base.write(out/'protocol.json', signature(out))
-    print('PREPARED 3x35 tasks,15 whole-case jobs; three smoke jobs gate full launch', flush=True)
+    print('PREPARED 3x35 tasks',len(jobs),'remaining jobs; reused',{m:len(v) for m,v in reused.items()},flush=True)
 
 
 class MagicLoader:
@@ -122,14 +189,17 @@ class MagicLoader:
             shape = tuple(map(int, p['shape_dhw']))
             supports = [np.unpackbits(p[n], count=int(np.prod(shape)), bitorder='little').reshape(shape).astype(bool)
                         for n in ('coronal_bits', 'sagittal_bits')]
+            slices,order=mapped_plane_metadata(p['slices'],source,target)
         supports = [self.physical.reorient_grid(s, source, target, gt.shape) for s in supports]
-        slices = self.native.canonical_plane_slices(supports)
-        if not np.all(np.argwhere(supports[0])[:, 2] == slices[0]): supports.reverse()
+        supports=[supports[i] for i in order]
+        if not (np.all(np.argwhere(supports[0])[:,2]==slices[0]) and np.all(np.argwhere(supports[1])[:,1]==slices[1])):
+            raise ValueError('mapped support/plane metadata mismatch')
         if not np.array_equal(fg, supports[0] | supports[1]): raise ValueError('FG mapping mismatch')
         validate_background(bg, gt, slices)
         audit.update(background_mode='point', bg_points_dhw=bg.tolist(), bg_in_gt_count=0,
                      original_four_bg_points=True, physical_mapping_applications=1,
-                     gt_used_for_roi=False, class_name=task['class_name'], plane_slices=list(slices))
+                     gt_used_for_roi=False, class_name=task['class_name'], plane_slices=list(slices),
+                     canonical_prompt_slices=list(slices),plane_source='cached raw plane metadata')
         return ct, gt, fg, bg, spacing, slices, supports, audit
 
 
@@ -279,7 +349,7 @@ def worker(job):
 def merge(out):
     verify(out);expected=base.read(out/'manifest.json')['tasks'];result={}
     for model in ASSETS:
-        rows=[]
+        rows=base.read(out/'reused_metrics.json')[model][:] if (out/'reused_metrics.json').exists() else []
         for job in base.read(out/'jobs.json'):
             if job['model']!=model:continue
             p=base.read(out/'jobs'/job['name']/'complete_metrics.json')
@@ -300,9 +370,9 @@ def merge(out):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('mode',choices=['prepare','worker','launch','merge','status'])
-    p.add_argument('--out',default=OUT);p.add_argument('--job');p.add_argument('--gpus',default='0,3,4,5,6')
+    p.add_argument('--out',default=OUT);p.add_argument('--job');p.add_argument('--gpus',default='0,3,4,5,6');p.add_argument('--reuse')
     a=p.parse_args();os.chdir(ROOT);out=ROOT/a.out
-    if a.mode=='prepare':prepare(out)
+    if a.mode=='prepare':prepare(out,a.reuse)
     elif a.mode=='worker':worker(base.read(a.job))
     elif a.mode=='merge':merge(out)
     elif a.mode=='launch':
