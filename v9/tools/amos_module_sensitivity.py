@@ -138,7 +138,7 @@ def run(job):
     import torch
     uuid='GPU-'+str(torch.cuda.get_device_properties(0).uuid).removeprefix('GPU-')
     if uuid!=job['gpu_uuid'] or torch.ones(1,device='cuda:0').item()!=1:raise ValueError('GPU UUID/CUDA mismatch')
-    context={};model=job['model'];variant=job['variant']
+    context={};model=job['model'];variant=job['variant'];memory_calls={}
     def loaded(prompt,decoder,state):
         if context:raise ValueError('unexpected repeated model load')
         context.update(prompt=prompt,decoder=decoder,state=state,
@@ -146,6 +146,14 @@ def run(job):
     if model=='v10_2':
         sys.path.insert(0,str(ROOT/'v10'))
         import v10.finetune_totalseg_amos_magic_v10_2_joint as entry
+        native_make=entry.make_prompt_v10_2
+        def make(args,adapter,device):
+            for name in ('memory_encoder','memory_attention'):
+                memory_calls[name]=0
+                def count(_module,_args,key=name):memory_calls[key]+=1
+                getattr(adapter.sam,name).register_forward_pre_hook(count)
+            return native_make(args,adapter,device)
+        entry.make_prompt_v10_2=make
         native=entry.load_init_v10_2
         def load(path,prompt,decoder):
             state=native(path,prompt,decoder);loaded(prompt,decoder,state);return state
@@ -172,6 +180,9 @@ def run(job):
         'no_memory_adapter':['no_memory_adapter'],'no_both_adapters':['no_3d_adapter','no_memory_adapter'],
         'no_semantic':['no_semantic'],'baseline':[]}[variant]
     if any(audit['calls'].get(k,0)<=0 for k in required):raise ValueError('intervention not exercised')
+    if model=='v10_2' and not memory_calls.get('memory_encoder',0):
+        raise ValueError('historical memory encoder did not run; not a Memory Adapter-only comparison')
+    audit['historical_memory_calls']=memory_calls
     ea=b.read(Path(job['run'])/'exact_prompt_audit.json')
     if (ea['loaded_task_count']!=job['task_count']
             or ea['dynamic_threshold_summary']['count']!=job['task_count']):raise ValueError('prompt/threshold scope mismatch')
