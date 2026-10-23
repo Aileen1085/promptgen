@@ -46,10 +46,18 @@ def validate_prompt_audit(a,tasks,source,floor):
             or settings['fallback']!=.60 or a['background_mode']!='point' or a['sources']!=[source]
             or len(keys)!=len(set(keys)) or set(keys)!={b.key(r) for r in tasks}
             or len(thresholds)!=len(tasks)
-            or any(not floor<=float(r['threshold'])<=.75 for r in thresholds)):
+            or any(not threshold_valid(r,floor) for r in thresholds)):
         raise ValueError('grid floor/prompt/threshold coverage audit mismatch')
     if source=='magic' and a['prompt_coordinate_transform']!='raw_magic_nrrd_to_preprocessed_nifti_swap_flip_xy_v1':
         raise ValueError('MAGIC alignment mismatch')
+
+
+def threshold_valid(row,floor):
+    # Preserve original native fallback branch; it intentionally bypasses clamp.
+    value=float(row['threshold']);source=row.get('source','')
+    if source in ('fallback_missing_prompt_logits','fallback_insufficient_separation'):
+        return value==.60
+    return math.isfinite(value) and floor<=value<=.75
 
 
 def verify_job(job):
@@ -139,12 +147,14 @@ def run(job):
     if not stages:raise ValueError('no actual decoder stages')
     tasks=verify_job(job)
     b.write(Path(job['run'])/'confirmation_audit.json',dict(dynamic_floor=floor,dynamic_max=.75,
-        task_count=len(tasks),all_stages_use_new_settings=True,actual_decode_stages=stages,memory_group=1))
+        task_count=len(tasks),all_stages_use_new_settings=True,actual_decode_stages=stages,memory_group=1,
+        fallback_probability=.60,fallback_bypasses_clamp=True))
 
 
 def summarize(rows,baseline,floor60):
     result=previous.diagnostic.magic.summarize(rows,baseline)
     result['delta_from_floor60']=previous.diagnostic.magic.summarize(rows,floor60)['delta_from_baseline']
+    result['fallback_count']=sum(str(r.get('dynamic_threshold_source','')).startswith('fallback') for r in rows)
     return result
 
 

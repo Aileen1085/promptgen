@@ -53,4 +53,12 @@ class FloorGridTests(unittest.TestCase):
         rows[0]['dice']=float('nan')
         with self.assertRaises(ValueError):self.g.summarize(rows,old,sixty)
 
+    def test_original_fallback_remains_point60_above_calibration_floor(self):
+        tasks=[r for r in self.tasks() if r['source_name']=='magic' and r['case_id']=='0']
+        a=self.audit();a['dynamic_threshold']['minimum']=.65
+        a['dynamic_threshold_rows']=[dict(threshold=.60,source='fallback_insufficient_separation')]
+        self.g.validate_prompt_audit(a,tasks,'magic',.65)
+        a['dynamic_threshold_rows'][0]['source']='prompt_logit_midpoint_clamped'
+        with self.assertRaises(ValueError):self.g.validate_prompt_audit(a,tasks,'magic',.65)
+
 if __name__=='__main__':unittest.main()
