@@ -26,7 +26,7 @@ SOURCE=ASSETS/('source_'+REV[:12])
 DEFAULT='output/pam_amos_three_view_full1485_20261023'
 METHODS=('coronal','sagittal','dual_or')
 ORDERS={'coronal':(2,0,1),'sagittal':(1,0,2)}
-PROTOCOL=dict(upstream_revision=REV,methods=METHODS,input_size=224,
+PROTOCOL=dict(upstream_revision=REV,methods=list(METHODS),input_size=224,
     box='selected_cached_slice_2d_GT_bbox_exclusive',box_window='box_CT_percentile_0.5_99.5',
     box_crop='exact_rectangle_resize224_no_GT_mask',prop_crop_scale=1.5,
     neighbor_mm=20,neighbor_cap=40,lower_frontier_min_pixels=100,upper_frontier_min_pixels=0,

@@ -1,5 +1,6 @@
 """Geometry and scope contracts for isolated PAM evaluation."""
 import importlib
+import json
 import unittest
 import numpy as np
 
@@ -74,6 +75,9 @@ class PAMContracts(unittest.TestCase):
     def test_guiding_mask_threshold_is_majority_not_any_vote(self):
         votes=np.array([[0,1,2]],dtype=np.int16)
         np.testing.assert_array_equal(self.p.guide_binary(votes,2),[[False,False,True]])
+
+    def test_frozen_protocol_roundtrips_without_type_changes(self):
+        self.assertEqual(json.loads(json.dumps(self.p.PROTOCOL)),self.p.PROTOCOL)
 
 
 if __name__=='__main__':unittest.main()
