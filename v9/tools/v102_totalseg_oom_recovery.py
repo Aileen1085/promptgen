@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -24,14 +25,19 @@ def require_drained(state,processes):
         raise ValueError('original/recovery processes or pending jobs still active')
 
 
+def process_matches(args,pid,self_pid):
+    return str(pid)!=str(self_pid) and any(Path(x).name in (
+        'v102_totalseg_best_floor_full.py','v102_totalseg_oom_recovery.py') for x in args
+        ) and any(x in ('worker','launch') for x in args)
+
+
 def related_processes():
     found=[]
     for q in Path('/proc').iterdir():
         if not q.name.isdigit():continue
         try:
             args=(q/'cmdline').read_bytes().decode(errors='replace').split('\0')
-            if (any(Path(x).name in ('v102_totalseg_best_floor_full.py','v102_totalseg_oom_recovery.py') for x in args)
-                    and any(x in ('worker','launch') for x in args)):found.append(q.name)
+            if process_matches(args,q.name,os.getpid()):found.append(q.name)
         except OSError:pass
     return found
 

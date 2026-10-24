@@ -13,6 +13,13 @@ class RecoveryTests(unittest.TestCase):
         for state,processes in [(dict(good,pending=1),[]),(dict(good,running={'0':{}}),[]),(good,['123'])]:
             with self.assertRaises(ValueError):self.r.require_drained(state,processes)
 
+    def test_process_guard_excludes_current_launcher(self):
+        a=['python','tools/v102_totalseg_oom_recovery.py','launch']
+        self.assertFalse(self.r.process_matches(a,100,100))
+        self.assertTrue(self.r.process_matches(a,101,100))
+        self.assertTrue(self.r.process_matches(['python','tools/v102_totalseg_best_floor_full.py','worker'],101,100))
+        self.assertFalse(self.r.process_matches(['python','other.py','launch'],101,100))
+
     def test_exact_reuse_and_pending_partition(self):
         jobs=[dict(name=str(i),task_count=1 if i==0 else (108 if i<7 else 1)) for i in range(58)]
         expected=sum(j['task_count'] for j in jobs)
