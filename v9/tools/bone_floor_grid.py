@@ -55,6 +55,10 @@ def write_new(path,value):
     with path.open('x',encoding='utf-8') as f:json.dump(value,f,ensure_ascii=False,indent=2);f.write('\n')
 
 
+def bone_payload(rows):
+    return {**b.manifest_payload(rows),'scope':'bone_all_provided_cases_development_floor_grid'}
+
+
 def freeze_settings(model,args,floor):
     if model not in p.MODELS or floor not in p.FLOORS or args.dynamic_threshold_min!=.35 or args.dynamic_threshold_max!=.75 or args.dynamic_threshold_fallback!=.60 or args.prompt_logit_neighborhood_radius!=2:raise ValueError('changed native floor parser settings')
     args.dynamic_threshold_min=floor
@@ -178,15 +182,15 @@ def prepare(out):
     tasks=p.make_tasks(m,DATA)
     if len(tasks)!=770 or len({t['case_id'] for t in tasks})!=20 or len({t['local_class_id'] for t in tasks})!=47:raise ValueError('Bone770/20/47 scope mismatch')
     out.mkdir(parents=True);split=p.augment_split(b.read(ROOT/BASE_SPLIT),tasks,m['classes'])
-    b.write(out/'bone_split.json',split);b.write(out/'manifest.json',b.manifest_payload(tasks));configure(out)
+    b.write(out/'bone_split.json',split);b.write(out/'manifest.json',bone_payload(tasks));configure(out)
     jobs=[]
     for j in p.make_jobs(tasks):
         rows=j.pop('tasks');q=out/'prepared'/j['name'];j['prepared']=str(q)
-        b.write(q/'manifest.json',b.manifest_payload(rows));jobs.append(j)
+        b.write(q/'manifest.json',bone_payload(rows));jobs.append(j)
     b.write(out/'jobs.json',jobs);b.write(out/'preparation_protocol.json',initial_signature(out))
     cpu=[]
     for case in sorted({t['case_id'] for t in tasks}):
-        q=out/'prompt_prepared'/case;b.write(q/'manifest.json',b.manifest_payload([t for t in tasks if t['case_id']==case]))
+        q=out/'prompt_prepared'/case;b.write(q/'manifest.json',bone_payload([t for t in tasks if t['case_id']==case]))
         jf=out/'prompt_jobs'/(case+'.json');b.write(jf,dict(gpu=2,prepared=str(q),out=str(out)));cpu.append(jf)
     b.write(out/'preparation_status.json',dict(phase='prompt_preparation',cases=20,done=0,expected_predictions=13860))
     def one(jf):

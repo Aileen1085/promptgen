@@ -60,6 +60,13 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(Path(cmd[0]),self.m.ROOT.parent/'conda-envs/nninteractive_eval/bin/python')
         self.assertEqual(cmd[-3:],['prompt-worker','--job','job.json'])
 
+    def test_bone_manifest_does_not_claim_historical_heldout_membership(self):
+        rows=[dict(source_name='bone',case_id='a',global_class_id=10003)]
+        result=self.m.bone_payload(rows)
+        self.assertEqual(result['expected_task_count'],1)
+        self.assertEqual(result['manifest_kind'],'independent_eight_source_validation_v1')
+        self.assertEqual(result['scope'],'bone_all_provided_cases_development_floor_grid')
+
     def test_attempts_have_disjoint_run_spec_and_log_paths(self):
         out=self.m.ROOT/'output/test_bone_queue'
         a=self.m.attempt_paths(out,'job',0);b=self.m.attempt_paths(out,'job',1)
