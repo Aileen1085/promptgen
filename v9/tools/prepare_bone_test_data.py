@@ -61,18 +61,21 @@ def extract_archive(archive,dest):
             if stat.S_ISLNK(i.external_attr>>16):raise ValueError('archive symlink')
             seen.add(key);entries.append((i,rel))
         if shutil.disk_usage(dest.parent).free<sum(i.file_size for i,_ in entries)+2*1024**3:raise ValueError('insufficient extraction headroom')
-        dest.mkdir(parents=True,exist_ok=True);records={}
+        dest.mkdir(parents=True,exist_ok=True);records={};resolved=dest.resolve()
+        directories={rel if i.is_dir() else rel.parent for i,rel in entries}
+        directories|={p for d in list(directories) for p in d.parents}
+        for rel in sorted(directories,key=lambda p:(len(p.parts),str(p))):
+            path=dest/rel
+            path.mkdir(parents=True,exist_ok=True)
+            if path.is_symlink() or not path.resolve().is_relative_to(resolved):raise ValueError('unsafe extraction directory')
         for index,(i,rel) in enumerate(entries):
             path=dest/rel
-            if not path.resolve().is_relative_to(dest.resolve()):raise ValueError('archive escapes output')
-            if path.is_symlink():raise ValueError('existing symlink')
-            if i.is_dir():path.mkdir(parents=True,exist_ok=True);continue
+            if i.is_dir():continue
             content=z.read(i);digest=hashlib.sha256(content).hexdigest()
-            path.parent.mkdir(parents=True,exist_ok=True)
-            if path.exists():
-                if not path.is_file() or sha(path)!=digest:raise ValueError('existing extracted file changed: '+str(rel))
-            else:
+            try:
                 with path.open('xb') as f:f.write(content)
+            except FileExistsError:
+                if path.is_symlink() or not path.is_file() or sha(path)!=digest:raise ValueError('existing extracted file changed: '+str(rel))
             records[rel.as_posix()]=dict(sha256=digest,size=i.file_size,crc32=i.CRC)
             if index%5000==0:print('EXTRACT',index,'/',len(entries),flush=True)
     audit=dict(archive_sha256=source_sha,archive_size=archive.stat().st_size,files=records)

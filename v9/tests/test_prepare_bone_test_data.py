@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from contextlib import contextmanager
+from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
@@ -115,6 +116,14 @@ class BonePreparationTests(unittest.TestCase):
             self.m.extract_archive(p/'bone.zip',p/'bone')
             meta=json.loads((p/'bone/0001/index.json').read_text());meta['label_counts']['1']=99
             with self.assertRaises(ValueError):self.m.scan_case(p/'bone/0001',meta,self.m.parse_mapping(MAPPING))
+
+    def test_fresh_extraction_resolves_directories_not_every_png(self):
+        with fixture_directory() as temp:
+            p=Path(temp);self.archive(p/'bone.zip',duplicate=False);calls=[]
+            original=Path.resolve
+            def resolve(path,*a,**k):calls.append(str(path));return original(path,*a,**k)
+            with patch.object(Path,'resolve',resolve):self.m.extract_archive(p/'bone.zip',p/'bone')
+            self.assertLessEqual(len(calls),7,'per-PNG NFS path-resolution amplification')
 
 
 if __name__=='__main__':unittest.main()
