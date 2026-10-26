@@ -72,9 +72,12 @@ def pending_jobs(jobs,complete,smoke):
     return [dict(j) for j in jobs if j['smoke']==smoke and j['name'] not in complete]
 
 
-def resume_settings(latest=None):
+def resume_settings(latest=None,oom=False):
     if latest is None:return dict(attempt=0,oom_retries=0,frame_batch=16)
-    return dict(attempt=latest['attempt']+1,oom_retries=latest['oom_retries'],frame_batch=latest['frame_batch'])
+    value=dict(attempt=latest['attempt']+1,oom_retries=latest['oom_retries'],frame_batch=latest['frame_batch'])
+    if oom and value['frame_batch']>1:
+        value['oom_retries']+=1;value['frame_batch']//=2
+    return value
 
 
 def validate_resume(job,limits):
@@ -111,10 +114,13 @@ def prepare(out):
         else:
             attempts=[b.read(f) for f in (old/'job_specs').glob(j['name']+'_a*.json')]
             latest=max(attempts,key=lambda v:v['attempt']) if attempts else None
+            oom=False
             if latest:
                 g.validate_job_spec(latest,j,old)
                 f=old/'job_specs'/(j['name']+'_a'+str(latest['attempt'])+'.json');files[str(f)]=sha(f)
-            resumes[j['name']]=resume_settings(latest)
+                tail=Path(latest['log']).read_text(errors='replace')[-10000:]
+                oom='out of memory' in tail.lower() or 'OutOfMemoryError' in tail
+            resumes[j['name']]=resume_settings(latest,oom=oom)
     info=partition(jobs,complete);validate_state_partition(state,jobs,complete)
     if not info['new_tasks']:raise ValueError('no recovery work remains')
     for n in ('protocol.json','reuse_audit.json','status.json','jobs.json','manifest.json','refs.json',

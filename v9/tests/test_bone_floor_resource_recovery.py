@@ -64,6 +64,14 @@ class ResourceRecoveryTests(unittest.TestCase):
         for patch in (dict(frame_batch=16),dict(oom_retries=0),dict(attempt=0)):
             with self.assertRaises(ValueError):self.m.validate_resume({**limits,**patch},limits)
 
+    def test_last_oom_requeued_after_dispatch_stopped_still_reduces_next_batch(self):
+        latest=dict(attempt=0,oom_retries=0,frame_batch=16)
+        self.assertEqual(self.m.resume_settings(latest,oom=True),
+                         dict(attempt=1,oom_retries=1,frame_batch=8))
+        latest=dict(attempt=8,oom_retries=4,frame_batch=1)
+        self.assertEqual(self.m.resume_settings(latest,oom=True),
+                         dict(attempt=9,oom_retries=4,frame_batch=1))
+
     def test_canary_must_be_fresh_one_task_baseline_at_same_floor_in_new_output(self):
         out=self.m.ROOT/'output/test_resource'; spec=dict(name='smoke',run=str(out/'jobs/smoke_a0'),
             model='v9_2',source='bone',variant='baseline',floor=.35,smoke=True,task_count=1,gpu=2)
