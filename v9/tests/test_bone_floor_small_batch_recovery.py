@@ -57,7 +57,7 @@ class SmallBatchRecoveryTests(unittest.TestCase):
     def test_engine_keeps_worker_entry_and_new_guard_policy(self):
         engine=self.m.engine(None)
         self.assertEqual(engine.launch.__globals__['__file__'],self.m.__file__)
-        self.assertEqual(engine.launch.__globals__['START_FREE_MIB'],32768)
+        self.assertEqual(engine.launch.__globals__['START_FREE_MIB'],30720)
         self.assertNotIn(45000,engine.launch.__code__.co_consts)
         self.assertNotIn(45000,engine.canary.__code__.co_consts)
 

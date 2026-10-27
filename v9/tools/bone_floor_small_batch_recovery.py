@@ -1,4 +1,4 @@
-"""Independent Bone recovery: batch cap4, true32GiB startup guard, readonly whole shards."""
+"""Independent Bone recovery: batch cap4, true30GiB startup guard, readonly whole shards."""
 from __future__ import annotations
 import argparse
 import inspect
@@ -15,7 +15,7 @@ from tools import bone_floor_resource_recovery as s
 r,g,b,p=s.r,s.g,s.b,s.p
 OLD=s.OUT
 OUT='output/bone_v92e360_v102e490_floor_grid_20261027_smallbatch'
-START_FREE_MIB=32768
+START_FREE_MIB=30720
 BATCH_CAP=4
 FILES=s.FILES+('resource_policy_audit.json',)
 _PARENT_VERIFY=s.verify
