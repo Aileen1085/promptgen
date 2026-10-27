@@ -188,10 +188,61 @@ def run(job):
     r.run(job)
 
 
+def canary_pending(out,canonical):
+    prior=[(f,b.read(f)) for f in (out/'job_specs').glob(canonical['name']+'_a*.json')]
+    if not prior:return dict(canonical,**resume_settings())
+    spec,latest=max(prior,key=lambda t:t[1]['attempt'])
+    checkpoint=out/('canary_retry_'+canonical['model']+'_after_a'+str(latest['attempt'])+'.json')
+    if checkpoint.exists():
+        state=b.read(checkpoint);s.verify_files(state['files']);job=dict(state['next_job'])
+    else:
+        text=Path(latest['log']).read_text(errors='replace');job=retry_job(latest,1,text,time.time())
+        if job is None:raise RuntimeError('canary attempt lacks completed retry evidence; retain all files')
+        state=dict(files={str(spec):s.sha(spec),latest['log']:s.sha(latest['log'])},next_job=job)
+        g.write_new(checkpoint,state)
+    for field in ('name','model','variant','source','floor','prepared','task_count','smoke'):
+        if job[field]!=canonical[field]:raise ValueError('changed canary retry task binding')
+    s.validate_canary_spec(job,out,canonical['model']);n.validate_batch(job,None);validate_memory_policy(job,None)
+    return job
+
+
+def canary(out,ids):
+    configure(out);verify(out);s.require_drained(b.read(ROOT/OLD/'status.json'),related_processes())
+    for model in p.MODELS:
+        marker=out/('canary_'+model+'.json')
+        if marker.exists():continue
+        canonical=next(j for j in b.read(out/'jobs.json') if j['smoke'] and j['model']==model and j['floor']==.35)
+        pending=[canary_pending(out,canonical)];available=g.gpu_snapshot();job=None
+        for gpu in ids:
+            job=select_pending(pending,gpu,available,time.time())
+            if job is not None:break
+        if job is None:
+            print('CANARY_MEMORY_WAIT',model,pending[0]['minimum_free_mib'],flush=True);raise SystemExit(75)
+        paths=g.attempt_paths(out,job['name'],job['attempt']);job.update(gpu=gpu,gpu_uuid=available[gpu]['uuid'],run=paths['run'],log=paths['log'])
+        validate_job_spec(job,canonical,out)
+        if Path(job['run']).exists():raise ValueError('canary attempt output already exists')
+        g.write_new(paths['spec'],job);Path(paths['log']).parent.mkdir(exist_ok=True)
+        env=dict(os.environ,CUDA_VISIBLE_DEVICES=str(gpu),OMP_NUM_THREADS='2',MKL_NUM_THREADS='2',OPENBLAS_NUM_THREADS='2',PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True')
+        with Path(paths['log']).open('x') as handle:
+            proc=subprocess.run([sys.executable,__file__,'worker','--job',paths['spec']],cwd=ROOT,env=env,stdout=handle,stderr=subprocess.STDOUT)
+        if proc.returncode:
+            retry=retry_job(job,proc.returncode,Path(paths['log']).read_text(errors='replace')[-10000:],time.time())
+            if retry is None:raise RuntimeError('non-OOM canary failure; retain '+paths['log'])
+            state=dict(files={paths['spec']:s.sha(paths['spec']),paths['log']:s.sha(paths['log'])},next_job=retry,returncode=proc.returncode)
+            g.write_new(out/('canary_retry_'+model+'_after_a'+str(job['attempt'])+'.json'),state)
+            print('CANARY_RESOURCE_REQUEUE',model,retry['frame_batch'],retry['minimum_free_mib'],flush=True);raise SystemExit(75)
+        verify_job(job)
+        files={str(f):s.sha(f) for f in [Path(paths['spec'])]+[Path(job['run'])/name for name in FILES]}
+        for checkpoint in out.glob('canary_retry_'+model+'_after_a*.json'):
+            state=b.read(checkpoint);s.verify_files(state['files']);files.update(state['files']);files[str(checkpoint)]=s.sha(checkpoint)
+        g.write_new(marker,dict(spec=paths['spec'],files=files,extra_verification_only=True))
+        print('FRESH_MEMORY_CANARY_PASS',model,flush=True)
+    engine(out).verify_canaries(out)
+
+
 def engine(out):
     namespace=dict(s.__dict__,__file__=__file__,OUT=OUT,OLD=OLD,FILES=FILES,START_FREE_MIB=START_FREE_MIB,
-        configure=configure,verify=verify,related_processes=related_processes,resume_settings=resume_settings)
-    exec(compile(n.resource_source(inspect.getsource(s.canary)),__file__,'exec'),namespace)
+        configure=configure,verify=verify,related_processes=related_processes,resume_settings=resume_settings,canary=canary)
     exec(compile(inspect.getsource(s.verify_canaries),__file__,'exec'),namespace)
     return SimpleNamespace(**namespace)
 

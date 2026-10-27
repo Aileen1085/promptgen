@@ -1,4 +1,5 @@
 import importlib
+from contextlib import ExitStack
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -123,6 +124,48 @@ class MemoryWaitRecoveryTests(unittest.TestCase):
             self.m.validate_job_spec(j,signed,out)
             for change in (dict(floor=.5),dict(gpu=1),dict(frame_batch=4),dict(minimum_free_mib=30720),dict(oom_retries=0)):
                 with self.assertRaises(ValueError):self.m.validate_job_spec({**j,**change},signed,out)
+
+    def canary_fixture(self):
+        out=self.m.ROOT/'output/test_canary_wait_only'
+        j={**self.job(batch=1,oom=2,ceiling=4,inherited=0,attempt=2),
+           'name':'smoke','model':'v9_2','variant':'baseline','source':'bone','floor':.35,
+           'prepared':'p','task_count':1,'smoke':True,'gpu_uuid':'GPU-x'}
+        paths=self.m.g.attempt_paths(out,'smoke',2);j.update({k:paths[k] for k in ('run','log')})
+        canonical={k:j[k] for k in ('name','model','variant','source','floor','prepared','task_count','smoke')}
+        return out,j,canonical,Path(paths['spec'])
+
+    def test_batch_one_canary_oom_persists_resource_wait_instead_of_exiting(self):
+        out,j,canonical,spec=self.canary_fixture();written=[]
+        def read(path):
+            if Path(path).name=='jobs.json':return [canonical]
+            if Path(path).name=='status.json':return {'phase':'full','running':{},'failed':[{}]}
+            if Path(path)==spec:return j
+            raise AssertionError(path)
+        with ExitStack() as stack:
+            for obj,key in ((self.m,'configure'),(self.m,'verify'),(self.m.s,'require_drained')):stack.enter_context(patch.object(obj,key))
+            stack.enter_context(patch.object(self.m,'related_processes',return_value=[]))
+            stack.enter_context(patch.object(self.m.p,'MODELS',('v9_2',)))
+            stack.enter_context(patch.object(self.m.time,'time',return_value=1000))
+            stack.enter_context(patch.object(self.m.g,'gpu_snapshot',return_value={4:{'free':47000,'uuid':'GPU-x'}}))
+            stack.enter_context(patch.object(self.m.b,'read',side_effect=read))
+            stack.enter_context(patch.object(Path,'glob',return_value=[spec]))
+            stack.enter_context(patch.object(Path,'exists',return_value=False))
+            stack.enter_context(patch.object(Path,'read_text',return_value='torch.OutOfMemoryError'))
+            stack.enter_context(patch.object(self.m.s,'sha',return_value='f'*64))
+            stack.enter_context(patch.object(self.m.g,'write_new',side_effect=lambda name,value:written.append((name,value))))
+            with self.assertRaises(SystemExit) as e:self.m.engine(out).canary(out,[4])
+            self.assertEqual(e.exception.code,75)
+        state=next(value for name,value in written if 'canary_retry' in str(name))
+        self.assertEqual((state['next_job']['minimum_free_mib'],state['next_job']['not_before'],state['next_job']['avoid_gpu_until']),(45000,1060,1600))
+
+    def test_existing_canary_retry_deadlines_do_not_move_on_each_poll(self):
+        out,j,canonical,spec=self.canary_fixture();pending=self.m.retry_job(j,1,'torch.OutOfMemoryError',1000)
+        state={'files':{str(spec):'f'*64},'next_job':pending}
+        def read(path):return j if Path(path)==spec else state
+        with patch.object(Path,'glob',return_value=[spec]),patch.object(Path,'exists',return_value=True),patch.object(self.m.b,'read',side_effect=read),patch.object(self.m.s,'verify_files') as verify,patch.object(self.m.g,'write_new') as write:
+            a=self.m.canary_pending(out,canonical);b=self.m.canary_pending(out,canonical)
+            self.assertEqual((a['not_before'],b['not_before']),(1060,1060))
+            self.assertEqual(verify.call_count,2);write.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()
