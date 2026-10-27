@@ -105,6 +105,23 @@ class SharedGridTests(unittest.TestCase):
         self.assertEqual(len(self.m.artifact_files(old)),6)
         self.assertEqual(len(self.m.artifact_files(current)),7)
 
+    def test_legacy_v92_fallback_source_is_read_from_final_native_stage(self):
+        task=dict(self.tasks[0],local_class_id=3)
+        raw=dict(task,**{name:.7 for name in self.m.p.METRICS},mask_threshold_used=.6)
+        payloads={'manifest.json':dict(tasks=[task]),'confirmation_audit.json':dict(stages=[dict(key=list(self.m.p.key(task)),source='fallback_missing_prompt_logits')]),'complete_metrics.json':dict(per_case_class=[raw])}
+        spec=dict(run='/native/run',prepared='/native/prepared')
+        with patch.object(self.m.g,'verify_job'),patch.object(self.m.b,'read',side_effect=lambda f:payloads[Path(f).name]):
+            row=self.m.reused_rows(spec)[0]
+        self.assertEqual(row['dynamic_threshold_source'],'fallback_missing_prompt_logits')
+        self.assertEqual(row['label_id'],3)
+
+    def test_final_results_reconstruct_original_shard_key_sets(self):
+        task=self.tasks[0];row=dict(task,**{name:.7 for name in self.m.p.METRICS})
+        shards=[dict(name='old35',model='v9_2',floor=.35,tasks=[task])]
+        rows={('v9_2',.35,self.m.p.key(task)):row}
+        self.assertEqual(self.m.validate_original_partition(shards,rows),{'old35':1})
+        with self.assertRaises(ValueError):self.m.validate_original_partition(shards,{})
+
     def test_marker_must_bind_all_required_attempt_inputs(self):
         marker=Path('/project/out/runs/job_a0/classes/a__10003.done.json')
         with self.assertRaises(ValueError):self.m.require_marker_files(dict(files={},record='/elsewhere.json'),marker,Path('/project/out'),dict(name='job'))

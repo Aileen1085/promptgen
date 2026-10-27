@@ -268,6 +268,7 @@ class GridSession:
         if key(task) != self.current or self.floor in self.results:
             raise ValueError('duplicate/misaligned shared floor result')
         row = {**task, **{name: float(metric[name]) for name in METRICS},
+               'label_id': int(task.get('local_class_id', key(task)[2]-10000)),
                'mask_threshold_used': float(audit['threshold']),
                'dynamic_threshold_source': str(audit['source'])}
         validate_rows([row], [task])

@@ -104,6 +104,7 @@ class SessionTests(unittest.TestCase):
         self.s.finish(self.task)
         self.assertEqual(len(self.saved),1)
         self.assertEqual(len(self.saved[0]['results']),2)
+        self.assertEqual(self.saved[0]['results'][0]['row']['label_id'],3)
         self.assertEqual(self.saved[0]['cache_stats']['raw']['hits'],1)
 
     def test_incomplete_class_must_not_emit_completion(self):

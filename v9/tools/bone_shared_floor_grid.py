@@ -106,6 +106,12 @@ def artifact_files(job):
     return [Path(job['run'])/name for name in parent.artifact_names(job)]
 
 
+def reused_rows(job):
+    # Legacy v9 metric rows lack threshold source; native helper reconstructs it
+    # from the audited final calibration stage and retains original local IDs.
+    return g.metric_rows(job)
+
+
 def parent_limit(job,latest,prior,oom=False):
     if latest is not None:return dict(latest,**parent.resume_settings(latest,oom=oom))
     return dict(job,**prior) if prior else dict(job,minimum_free_mib=30720,never_launched=True)
@@ -225,7 +231,7 @@ def collect_parent():
                 if all(f.exists() for f in artifact_files(attempt)):
                     parent.verify_job(attempt);chosen=attempt;specfile=old/'job_specs'/(job['name']+'_a'+str(attempt['attempt'])+'.json');recovered.append(job['name']);break
         if chosen:
-            rows=b.read(Path(chosen['run'])/'complete_metrics.json')['per_case_class']
+            rows=reused_rows(chosen)
             for row in rows:
                 identity=(job['model'],job['floor'],p.key(row))
                 if identity in completed:raise ValueError('duplicate readonly result')
@@ -419,7 +425,7 @@ def schedule(out,control):
 
 def merge(out):
     require_merge_state(b.read(out/'status.json'),related())
-    verify(out);check_controls(out);all_rows={(x['model'],x['floor'],p.key(x['row'])):x['row'] for x in b.read(out/'reuse_audit.json')['completed']}
+    verify(out);g.dataset_signature(rehash=True);check_controls(out);all_rows={(x['model'],x['floor'],p.key(x['row'])):x['row'] for x in b.read(out/'reuse_audit.json')['completed']}
     for value in class_records(out).values():
         record=value['record']
         for result in record['results']:
@@ -429,10 +435,23 @@ def merge(out):
     tasks=b.read(out/'manifest.json')['tasks'];result={}
     for model in p.MODELS:
         parts={f:[all_rows[(model,f,p.key(t))] for t in tasks] for f in p.FLOORS}
-        result[model]=dict(floors={str(f):p.summarize(rows,parts[.35],parts[.60]) for f,rows in parts.items()},winner=p.winner(parts))
+        result[model]=dict(floors={format(f,'.2f'):p.summarize(rows,parts[.35],parts[.60]) for f,rows in parts.items()},winner=p.winner(parts))
     if len(all_rows)!=13860:raise ValueError('final unique row count mismatch')
-    atomic_new(out/'merged_metrics.json',dict(models=result,rows=13860,scope='Bone20/47/770 development tuning; shared native stages',protocol_sha=sha(out/'protocol.json')))
+    shards=[dict(j,tasks=b.read(Path(j['prepared'])/'manifest.json')['tasks']) for j in b.read(ROOT/OLD/'jobs.json')]
+    if len(shards)!=162:raise ValueError('original shard count changed')
+    partition=validate_original_partition(shards,all_rows)
+    atomic_new(out/'merged_metrics.json',dict(models=result,rows=13860,predictions=13860,task_count_per_configuration=770,
+        original_shard_counts=partition,scope='Bone20/47/770 development tuning; shared native stages',protocol_sha=sha(out/'protocol.json')))
     print('SHARED_GRID_MERGED_13860',flush=True)
+
+
+def validate_original_partition(shards,rows):
+    result={}
+    for job in shards:
+        try:selected=[rows[(job['model'],job['floor'],p.key(t))] for t in job['tasks']]
+        except KeyError as error:raise ValueError('missing original shard result key') from error
+        p.validate_rows(selected,job['tasks']);result[job['name']]=len(selected)
+    return result
 
 
 def main():
