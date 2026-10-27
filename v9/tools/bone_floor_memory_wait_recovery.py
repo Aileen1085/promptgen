@@ -139,6 +139,7 @@ def configure(out,minimum=START_FREE_MIB):
 
 def prepare(out):
     if out.exists():raise FileExistsError('new recovery output exists')
+    configure(out)
     old=ROOT/OLD;_PARENT_VERIFY(old);n.engine(old).verify_canaries(old)
     state=b.read(old/'status.json');s.require_drained(state,related_processes())
     jobs=b.read(old/'jobs.json');prior=b.read(old/'reuse_audit.json');complete=set();files={};resumes={}

@@ -68,6 +68,14 @@ class MemoryWaitRecoveryTests(unittest.TestCase):
         self.assertNotIn('resource_policy_audit.json',self.m.artifact_names({'run':str(old)}))
         self.assertIn('resource_policy_audit.json',self.m.artifact_names({'run':str(parent)}))
 
+    def test_prepare_installs_parent_compatible_validator_before_old_canary_audit(self):
+        events=[];out=self.m.ROOT/'output/test_memory_wait_prepare_guard_only'
+        self.assertFalse(out.exists())
+        with patch.object(self.m,'configure',side_effect=lambda q:events.append('configure')):
+            with patch.object(self.m,'_PARENT_VERIFY',side_effect=RuntimeError('stop_before_io')):
+                with self.assertRaisesRegex(RuntimeError,'stop_before_io'):self.m.prepare(out)
+        self.assertEqual(events,['configure'])
+
     def test_fresh_config_preserves_batch_cap_and_actual_guard(self):
         v=self.m.resume_settings(None,now=1000)
         self.assertEqual((v['frame_batch'],v['oom_retries'],v['minimum_free_mib']),(4,0,30720))
