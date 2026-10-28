@@ -18,6 +18,8 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / 'nninteractive_test/infer/prompt_protocol.py'
+if not HELPER.is_file():
+    HELPER = ROOT.parent / 'nninteractive_test_amos/infer/prompt_protocol.py'
 spec = importlib.util.spec_from_file_location('_bone_single_native_prompt', HELPER)
 native_prompt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native_prompt)
