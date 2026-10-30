@@ -27,6 +27,13 @@ class RecoveryTests(unittest.TestCase):
         path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(value),encoding='utf-8');return path
     def zombie(self):return dict(self.identity,state='Z',cwd=None,argv=[],raw_exit_status=0)
 
+    def test_bound_sha256_constants_are64hex_and_bind_actual_failure_evidence(self):
+        for name in ('CONTROLLER_SHA256','RUNTIME_SHA256','FAILURE_EVIDENCE_SHA256'):
+            self.assertRegex(getattr(self.m,name),r'\A[0-9a-f]{64}\Z',name)
+        actual=('e849aaeb6e1cd72ffa2a5661f88266ac'+'b3f5386c8bddc80fd7df14f0733d4d59')
+        self.assertEqual(len(actual),64)
+        self.assertEqual(self.m.FAILURE_EVIDENCE_SHA256,actual)
+
     def test_old_none_during_transition_resamples_actual_matching_zombie(self):
         old=importlib.import_module('tools.amos_prompt_reuse_eval');d=self.d();p=d/'124';p.mkdir()
         fields=['R','123']+['0']*48;fields[19]='556'
