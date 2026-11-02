@@ -31,19 +31,68 @@ SIGNED = {
     'tools/amos_prompt_reuse_runtime.py':'bd3f4c1274088edc8fea1cfc0c908d9a4e1b436471a85d2e2400be9f56d9725a',
     'tools/amos_prompt_ablation_restore_runtime.py':'ad1c19d82449c84186160b876adfba14ea40f0faf41fc491a5a2f637dce929e3',
     'tools/amos_semantic_only_prompts.py':'474ac73730734732a83c110cd8d5aa04f54ea8e80aaedafcf128495176bd6d09',
-    'v10/infer/infer_eight_source_adaptive_v10_2.py':'12ad8e8c0d58c8996da56ecf95da0d3ab219000c27e1539c28fb093fafae3407',
-    'v10/infer/infer_amos_sam2_promptgen_v10.py':'5e1092c49c62710aaf60fbf075460e9aba8e0fdfc1b16b94a30653bc68c8a761',
-    'v10/v10_sam2_memory_roi.py':'2402a8addf00423275f0d8538ac51fd560eda7dff6664369f384b477cb331a41',
 }
+# These are complete reviewed source profiles, never independently selectable
+# hashes. The local checkout supports metadata/CPU tests only. Production must
+# use the unchanged sources that produced the authenticated selected S21 run.
+NATIVE_PROGRAM='v10/infer/infer_eight_source_adaptive_v10_2.py'
+MEMORY_SOURCE='v10/v10_sam2_memory_roi.py'
+SCORER_SOURCE='v10/infer/infer_amos_sam2_promptgen_v10.py'
+LOCAL_DEPENDENCIES={
+    NATIVE_PROGRAM:'12ad8e8c0d58c8996da56ecf95da0d3ab219000c27e1539c28fb093fafae3407',
+    MEMORY_SOURCE:'2402a8addf00423275f0d8538ac51fd560eda7dff6664369f384b477cb331a41',
+    SCORER_SOURCE:'5e1092c49c62710aaf60fbf075460e9aba8e0fdfc1b16b94a30653bc68c8a761',
+}
+S21_DEPENDENCIES={
+    NATIVE_PROGRAM:'31bb0252748a3962d420621b53f754c09f123d633cb5a96ad7bcf257502f393b',
+    MEMORY_SOURCE:'138dc1651ace2eef934e2613cfdf6e9115ef2737f9c082a8253e904895ffefab',
+    SCORER_SOURCE:LOCAL_DEPENDENCIES[SCORER_SOURCE],
+}
+S21_PROTOCOL='output/amos_v102_e490_floor070_prompt_ablations_20261031_reusefast_ownerfix/protocol.json'
+S21_PROTOCOL_SHA256='0df2ca0724a5c8a86e2d28264875f1556f84f2cdaded53d41d5847055d78541a'
 _NATIVE = _REUSE = None
 
 
 def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def source_guard():
+def classify_dependencies(hashes):
+    if hashes==LOCAL_DEPENDENCIES:return 'local_metadata_only'
+    if hashes==S21_DEPENDENCIES:return 'production_s21'
+    raise ValueError('unknown or mixed semantic dependency source profile')
+
+
+def dependency_profile():
+    hashes={name:sha(ROOT/name) for name in LOCAL_DEPENDENCIES}
+    return classify_dependencies(hashes),hashes
+
+
+def validate_s21_protocol(protocol,signature,protocol_sha256):
+    if protocol_sha256!=S21_PROTOCOL_SHA256 or signature!={'sha256':S21_PROTOCOL_SHA256}:
+        raise ValueError('authenticated S21 protocol SHA/signature changed')
+    sources=protocol.get('sources',{})
+    if (any(sources.get(name)!=expected for name,expected in S21_DEPENDENCIES.items())
+            or protocol.get('native_source_sha256')!=S21_DEPENDENCIES[NATIVE_PROGRAM]):
+        raise ValueError('authenticated S21 native/scorer/memory source binding changed')
+    return True
+
+
+def _read_s21_protocol():
+    path=ROOT/S21_PROTOCOL;payload=path.read_bytes()
+    signature=json.loads(path.with_name('protocol_signature.json').read_text(encoding='utf-8'))
+    return json.loads(payload),signature,hashlib.sha256(payload).hexdigest()
+
+
+def source_guard(*,production=False):
     for name, expected in SIGNED.items():
         if sha(ROOT/name)!=expected:raise ValueError('signed semantic source SHA changed: '+name)
+    profile,dependencies=dependency_profile()
+    proof=dict(profile=profile,dependencies=dependencies,production=bool(production))
+    if production:
+        if profile!='production_s21':raise ValueError('production requires the authenticated S21 dependency profile; local metadata profile cannot run inference')
+        validate_s21_protocol(*_read_s21_protocol())
+        proof['selected_s21_protocol_sha256']=S21_PROTOCOL_SHA256
+    return proof
 
 
 def _ast(node):return ast.dump(node,include_attributes=False)
@@ -346,7 +395,7 @@ def reuse_engine():
 
 
 def initialize(job,paths):
-    source_guard()
+    source_binding=source_guard(production=True)
     native=native_engine();original=native['_install_execution_hooks']
     def hooks(session):
         session.semantic_verified=False
@@ -383,6 +432,7 @@ def initialize(job,paths):
         return proof
     session.finish=finish
     session.input_audit['semantic_only_protocol']=dict(runtime_sha256=sha(__file__),helper_sha256=SIGNED['tools/amos_semantic_only_prompts.py'],
+        dependency_source_binding=source_binding,
         native_transform=native['TRANSFORM_PROOF'],decode_transform=session.namespace['_semantic_decode_binding'],
         spatial_prompt_policy='none',geometry_source='actual_readonly_case_CT_shape',full_xy=True,
         component_policy='retain_threshold_mask_only_when_verified_semantic_and_both_seeds_empty',
