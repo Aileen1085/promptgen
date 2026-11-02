@@ -53,6 +53,23 @@ class SemanticControllerTests(unittest.TestCase):
     def test_signed_source_anchor_change_is_refused(self):
         with self.assertRaisesRegex(ValueError,'SHA'):self.entry.compile_context(source=b'pass')
 
+    def test_local_profile_refuses_prepare_and_pipeline_before_any_output(self):
+        from tools import amos_semantic_only_runtime as runtime
+        out=ROOT/'output'/'semantic_local_profile_must_not_be_created'
+        self.assertFalse(out.exists())
+
+        with patch.object(runtime,'dependency_profile',return_value=('local_metadata_only',dict(runtime.LOCAL_DEPENDENCIES))),\
+             patch.object(self.m,'_native_prepare') as prepare,patch.object(self.m,'_native_run_pipeline') as run:
+            with self.assertRaisesRegex(ValueError,'production'):self.m.prepare(out)
+            with self.assertRaisesRegex(ValueError,'production'):self.m.run_pipeline(out)
+            prepare.assert_not_called();run.assert_not_called()
+        self.assertFalse(out.exists())
+
+    def test_status_and_merge_verification_reauthenticates_production_sources(self):
+        with patch.object(self.m,'_source_guard',side_effect=RuntimeError('guard sentinel')) as guard:
+            with self.assertRaisesRegex(RuntimeError,'guard sentinel'):self.m.verify(ROOT/'output'/'unused')
+        self.assertEqual(guard.call_args.kwargs,{'production':True})
+
     def test_production_count_policy_is_1485_and_no_reference_rows_reused(self):
         self.assertEqual(self.m.PRODUCTION_ROWS,1485)
         self.assertEqual(self.m.policy_extension()['fresh_rows'],1485)
@@ -74,7 +91,9 @@ class SemanticAtomicTests(SemanticControllerTests):
     test_partial_results_are_never_completed_classes=original.ControllerTests.test_partial_results_are_never_completed_classes
     test_preflight_refuses_output_tmux_process_and_pipeline=original.ControllerTests.test_preflight_refuses_output_tmux_process_and_pipeline
     test_independent_real_gpu_control_gate_required=original.ControllerTests.test_independent_real_gpu_control_gate_required
-    test_pipeline_is_once_only_and_orders_independent_gate_before_full=original.ControllerTests.test_pipeline_is_once_only_and_orders_independent_gate_before_full
+    def test_pipeline_is_once_only_and_orders_independent_gate_before_full(self):
+        with patch.object(self.m,'_source_guard'):
+            original.ControllerTests.test_pipeline_is_once_only_and_orders_independent_gate_before_full(self)
     test_class_macro_and_fsum_do_not_follow_task_weighted_or_naive_sum=original.ControllerTests.test_class_macro_and_fsum_do_not_follow_task_weighted_or_naive_sum
 
     def setUp(self):
