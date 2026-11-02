@@ -45,6 +45,36 @@ class SemanticRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'anchor'):
                 self.m.transform_native(payload)
 
+    def test_dependency_profiles_accept_only_complete_reviewed_pairs(self):
+        m=self.m
+        local=dict(m.LOCAL_DEPENDENCIES);production=dict(m.S21_DEPENDENCIES)
+        self.assertEqual(m.classify_dependencies(local),'local_metadata_only')
+        self.assertEqual(m.classify_dependencies(production),'production_s21')
+        for memory in (production['v10/v10_sam2_memory_roi.py'],'0'*64):
+            mixed=dict(local);mixed['v10/v10_sam2_memory_roi.py']=memory
+            with self.assertRaisesRegex(ValueError,'profile'):m.classify_dependencies(mixed)
+        changed=dict(production);changed['v10/infer/infer_amos_sam2_promptgen_v10.py']='0'*64
+        with self.assertRaisesRegex(ValueError,'profile'):m.classify_dependencies(changed)
+
+    def test_production_authenticates_exact_s21_protocol_and_signature(self):
+        m=self.m;protocol=dict(sources=dict(m.S21_DEPENDENCIES),native_source_sha256=m.S21_DEPENDENCIES[m.NATIVE_PROGRAM])
+        signature={'sha256':m.S21_PROTOCOL_SHA256}
+        self.assertTrue(m.validate_s21_protocol(protocol,signature,m.S21_PROTOCOL_SHA256))
+        for field in ('digest','signature','memory','native'):
+            p=copy.deepcopy(protocol);s=copy.deepcopy(signature);digest=m.S21_PROTOCOL_SHA256
+            if field=='digest':digest='0'*64
+            if field=='signature':s={'sha256':'0'*64}
+            if field=='memory':p['sources'][m.MEMORY_SOURCE]='0'*64
+            if field=='native':p['native_source_sha256']='0'*64
+            with self.subTest(field=field),self.assertRaises(ValueError):m.validate_s21_protocol(p,s,digest)
+
+    def test_local_profile_cannot_initialize_gpu_or_read_production_protocol(self):
+        m=self.m
+        with patch.object(m,'dependency_profile',return_value=('local_metadata_only',dict(m.LOCAL_DEPENDENCIES))),\
+             patch.object(m,'reuse_engine') as reuse,patch.object(m,'_read_s21_protocol') as protocol:
+            with self.assertRaisesRegex(ValueError,'production'):m.initialize({}, {})
+            reuse.assert_not_called();protocol.assert_not_called()
+
     def test_full_ct_geometry_never_reads_prompt_or_target(self):
         ns = self.m.native_engine(); s = ns['Session']({}, {})
         s.variant = 'semantic_only'; s.namespace = {'audit': {'loaded_task_keys': []}}
