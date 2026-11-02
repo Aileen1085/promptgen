@@ -36,10 +36,10 @@ PRODUCTION_ROWS=1485
 _CONTEXT=None
 
 
-def source_guard():
+def source_guard(*,production=False):
     for name,expected in ((ANCESTOR,ANCESTOR_SHA256),(MANIFEST,MANIFEST_SHA256),(SELECTED_HELPERS,SELECTED_HELPERS_SHA256)):
         if hashlib.sha256((ROOT/name).read_bytes()).hexdigest()!=expected:raise ValueError('signed semantic controller SHA changed: '+name)
-    importlib.import_module('tools.amos_semantic_only_runtime').source_guard()
+    return importlib.import_module('tools.amos_semantic_only_runtime').source_guard(production=production)
 
 
 _EXTENSIONS=r'''
@@ -79,7 +79,7 @@ def _native_bootstrap_preflight(out,jobs,controls):
 
 
 def verify(out,**kwargs):
-    _source_guard();protocol=_native_verify(out,**kwargs);p=protocol['policy']
+    _source_guard(production=True);protocol=_native_verify(out,**kwargs);p=protocol['policy']
     if p.get('rows')!=1485 or p.get('interactions')!=1 or any(p.get(k)!=v for k,v in policy_extension().items()):
         raise ValueError('semantic full CT one-row policy changed')
     jobs=read(Path(out)/'jobs.json')
@@ -88,7 +88,12 @@ def verify(out,**kwargs):
 
 
 def prepare(out,**kwargs):
-    _source_guard();return _native_prepare(out,**kwargs)
+    _source_guard(production=True);return _native_prepare(out,**kwargs)
+
+
+def run_pipeline(out):
+    # Reject metadata-only sources before the native pipeline creates its log.
+    _source_guard(production=True);return _native_run_pipeline(out)
 
 
 def related(proc_root=None):
@@ -182,7 +187,8 @@ def compile_context(*,source=None):
         TRANSFORM_PROOF=dict(proof,controller_reverse_ast_equal=True,semantic_counts=counts),
         runtime=lambda:importlib.import_module('tools.amos_semantic_only_runtime'),_source_guard=source_guard,
         _native_manifest_payload=manifest.native_manifest_payload,
-        _native_check_controls=ns['check_controls'],_native_verify=ns['verify'],_native_prepare=ns['prepare'])
+        _native_check_controls=ns['check_controls'],_native_verify=ns['verify'],_native_prepare=ns['prepare'],
+        _native_run_pipeline=ns['run_pipeline'])
     ns['SOURCE_SEEDS']=tuple(dict.fromkeys((*ns['SOURCE_SEEDS'],MANIFEST,SELECTED_HELPERS,
         'tools/amos_semantic_only_runtime.py','tools/amos_semantic_only_eval.py','tools/amos_semantic_only_prompts.py',
         'tests/test_amos_semantic_only_runtime.py','tests/test_amos_semantic_only_eval.py','tests/test_amos_semantic_only_prompts.py',
