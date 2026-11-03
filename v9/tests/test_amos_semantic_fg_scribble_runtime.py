@@ -186,12 +186,31 @@ class RealTorchForegroundTests(unittest.TestCase):
         groups=torch.zeros((2,3,16,16));groups[:,0,3:12,6]=1
         video=torch.rand((4,3,32,32));coords=torch.linspace(-1,1,4);semantic=torch.rand(1,128)
         kwargs=dict(plane_ids=torch.tensor([1,0]),slice_coords=torch.tensor([0.,0.]),frame_coords=coords,foreground_mode_id=0,semantic_text='spleen',semantic_embedding=semantic)
-        with torch.no_grad():
-            out=p.forward_case_3d_tokens(groups,video,**kwargs)
-            p.background_mode_embedding.weight[2].add_(1)
-            changed=p.forward_case_3d_tokens(groups,video,**kwargs)
+        projection_inputs=[]
+        hook=p.mode_dense_projection.register_forward_pre_hook(lambda _module,args:projection_inputs.append(args[0].detach().clone()))
+        try:
+            with torch.no_grad():
+                self.assertEqual(torch.count_nonzero(p.mode_dense_projection.weight).item(),0)
+                self.assertEqual(torch.count_nonzero(p.mode_dense_projection.bias).item(),0)
+                zero_out=p.forward_case_3d_tokens(groups,video,**kwargs)
+                p.background_mode_embedding.weight[2].add_(1)
+                zero_changed=p.forward_case_3d_tokens(groups,video,**kwargs)
+                # Native initialization suppresses the dense mode bias. Prove
+                # the learned none path with an explicit synthetic projection.
+                p.background_mode_embedding.weight[2].sub_(1)
+                p.mode_dense_projection.weight.copy_(torch.eye(p.prompt_dim))
+                out=p.forward_case_3d_tokens(groups,video,**kwargs)
+                p.background_mode_embedding.weight[2].add_(1)
+                changed=p.forward_case_3d_tokens(groups,video,**kwargs)
+        finally:hook.remove()
+        self.assertEqual(len(projection_inputs),4)
+        for before,after in ((projection_inputs[0],projection_inputs[1]),(projection_inputs[2],projection_inputs[3])):
+            torch.testing.assert_close(after-before,torch.ones_like(before))
+        torch.testing.assert_close(zero_changed['dense_prompt_embeddings'],zero_out['dense_prompt_embeddings'])
+        torch.testing.assert_close(zero_changed['sparse_prompt_embeddings']-zero_out['sparse_prompt_embeddings'],torch.ones_like(zero_out['sparse_prompt_embeddings']))
         self.assertEqual((out['background_prompt_mode'],out['background_active']),('none',False))
         self.assertEqual(set(out['prompt_3d_role_ids'].tolist()),{0});self.assertEqual(set(out['prompt_3d_type_ids'].tolist()),{0})
         self.assertFalse(out['aligned_prompt'][:,1:].any());self.assertTrue(out['aligned_prompt'][:,0].any())
         torch.testing.assert_close(changed['sparse_prompt_embeddings']-out['sparse_prompt_embeddings'],torch.ones_like(out['sparse_prompt_embeddings']))
+        torch.testing.assert_close(changed['dense_prompt_embeddings']-out['dense_prompt_embeddings'],torch.ones_like(out['dense_prompt_embeddings']))
         self.assertFalse(torch.equal(out['dense_prompt_embeddings'],changed['dense_prompt_embeddings']))
