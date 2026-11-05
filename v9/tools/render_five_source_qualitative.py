@@ -195,43 +195,71 @@ def _font(size):
     return ImageFont.load_default(size=size)
 
 
-def _draw_label(draw, text, center_x, y, font, width):
+def _wrap_label(text, font, width):
     words, lines, current = text.split(), [], ""
     for word in words:
         candidate = f"{current} {word}".strip()
-        if current and draw.textlength(candidate, font=font) > width:
+        if current and font.getlength(candidate) > width:
             lines.append(current)
-            current = word
-        else:
-            current = candidate
-    lines.append(current)
-    draw.multiline_text((center_x, y), "\n".join(lines), font=font, fill="white", anchor="ma", align="center", spacing=2)
+            current = ""
+        # Preserve labels even when a case ID or method token exceeds a cell.
+        for character in word:
+            candidate = current + character
+            if current and font.getlength(candidate) > width:
+                lines.append(current)
+                current = ""
+            current += character
+        current += " "
+    if current.strip():
+        lines.append(current.strip())
+    return [line.rstrip() for line in lines] or [""]
+
+
+def _row_layout(case, panel_pixels):
+    """Measure text before composing; 10 columns at 7 inches retain 5–6 pt labels."""
+    gap = 10
+    font_size = max(12, panel_pixels // 9)
+    font = _font(font_size)
+    line_height = math.ceil(font_size * 1.25)
+    padding = max(8, font_size // 3)
+    titles = ["CT", "Ground truth"] + [m["name"] for m in case["methods"]]
+    lines = [_wrap_label(title, font, panel_pixels) for title in titles]
+    metric_y = padding + max(map(len, lines)) * line_height + padding
+    header = metric_y + line_height + padding
+    width = len(titles) * (panel_pixels + gap) + gap
+    return dict(font_size=font_size, line_height=line_height, gap=gap, width=width,
+                title_lines=lines, title_y=padding, metric_y=metric_y,
+                header=header, footer=line_height + 2 * padding)
 
 
 def _case_row(case, window, alpha, contour, panel_pixels):
-    gap, header, footer = 10, 72, 62
+    layout = _row_layout(case, panel_pixels)
+    gap, header, footer = layout["gap"], layout["header"], layout["footer"]
     columns = len(case["methods"]) + 2
     cell = panel_pixels + gap
     row = Image.new("RGB", (columns * cell + gap, header + panel_pixels + footer), "black")
     draw = ImageDraw.Draw(row)
-    font = _font(max(12, panel_pixels // 18))
+    font = _font(layout["font_size"])
     ct, gt = _display(case["ct"], case), _display(case["gt"], case)
     spacing = case["spacing_dhw"][1:]
     if case["display_transform"].get("transpose", False):
         spacing = spacing[::-1]
-    items = [("CT", None, None), ("Ground truth", gt, None)]
-    items += [(f"{m['name']}\n3D Dice {m['dice_3d']:.3f}", _display(m["mask"], case), gt if contour else None)
+    items = [(None, None, None), (None, gt, None)]
+    items += [(f"3D Dice {m['dice_3d']:.3f}", _display(m["mask"], case), gt if contour else None)
               for m in case["methods"]]
-    for i, (title, mask, gt_contour) in enumerate(items):
-        # Split explicit metric lines before wrapping the method name.
-        for line_idx, line in enumerate(title.split("\n")):
-            _draw_label(draw, line, gap + i * cell + panel_pixels / 2, 8 + line_idx * 39, font, panel_pixels)
+    for i, (metric, mask, gt_contour) in enumerate(items):
+        center = gap + i * cell + panel_pixels / 2
+        for line_idx, line in enumerate(layout["title_lines"][i]):
+            draw.text((center, layout["title_y"] + line_idx * layout["line_height"]),
+                      line, font=font, fill="white", anchor="mt")
+        if metric:
+            draw.text((center, layout["metric_y"]), metric, font=font, fill="white", anchor="mt")
         panel = physical_panel(blend_slice(ct, mask, window, alpha, gt_contour), spacing, panel_pixels)
         row.paste(panel, (gap + i * cell + (panel_pixels - panel.width) // 2,
                          header + (panel_pixels - panel.height) // 2))
     label = (f"{case['source']} | {case['case_id']} | {case['class_name']} | axial index {case['slice_index']} (0-based)"
              f" | HU [{window[0]:g}, {window[1]:g}]")
-    draw.text((gap, header + panel_pixels + 10), label, font=font, fill="white")
+    draw.text((gap, header + panel_pixels + layout["title_y"]), label, font=font, fill="white", anchor="lt")
     return row
 
 

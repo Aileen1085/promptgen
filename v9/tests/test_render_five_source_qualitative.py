@@ -124,7 +124,9 @@ class RendererTests(unittest.TestCase):
         report = renderer.render_manifest(manifest, self.root / "full", panel_pixels=100, gt_contour=True)
         self.assertEqual(report["expected_methods"], list(renderer.METHODS))
         with Image.open(self.root / "full/five_source_comparison.png") as im:
-            self.assertEqual(im.size, (1110, 1170))
+            self.assertEqual(im.width, 1110)
+            self.assertGreater(im.height, 5 * 100)
+            self.assertEqual(im.height % 5, 0)
         case = renderer.load_case(entries[0], self.root)
         native = case["gt"][case["slice_index"], 1:7, 2:9]
         np.testing.assert_array_equal(renderer._display(case["gt"], case), native.T[::-1, ::-1])
@@ -151,6 +153,42 @@ class RendererTests(unittest.TestCase):
         entry["methods"][0]["grid_id"] = "different-physical-grid"
         with self.assertRaisesRegex(ValueError, "grid"):
             renderer.load_case(entry, self.root, ["PromptGen"])
+
+    def test_paper_labels_remain_five_point_at_seven_inches_without_overlap(self):
+        from PIL import ImageDraw
+        self.assertIsNotNone(getattr(renderer, "_row_layout", None), "Measured paper layout is required")
+        entry = self.fixture()
+        entry["methods"] = [{"name": name, "mask_path": "case1_pred.npy", "grid_id": "case1"}
+                            for name in renderer.METHODS]
+        case = renderer.load_case(entry, self.root)
+        for pixels in (360, 512):
+            with self.subTest(panel_pixels=pixels):
+                layout = renderer._row_layout(case, pixels)
+                paper_points = layout["font_size"] * 7 * 72 / layout["width"]
+                self.assertGreaterEqual(paper_points, 5)
+                self.assertLessEqual(paper_points, 6)
+                row = renderer._case_row(case, (-160, 240), .4, False, pixels)
+                draw = ImageDraw.Draw(row)
+                font = renderer._font(layout["font_size"])
+                long_case = dict(case, methods=[dict(m) for m in case["methods"]])
+                long_case["methods"][4]["name"] += " (native full-volume)"
+                wrapped = renderer._row_layout(long_case, pixels)
+                self.assertGreater(len(wrapped["title_lines"][-4]), 1)
+                self.assertGreater(wrapped["header"], layout["header"])
+                for lines in layout["title_lines"]:
+                    for i, line in enumerate(lines):
+                        bbox = draw.textbbox((0, layout["title_y"] + i * layout["line_height"]),
+                                             line, font=font, anchor="lt")
+                        self.assertLessEqual(bbox[2] - bbox[0], pixels)
+                        self.assertLess(bbox[3], layout["metric_y"])
+                metric_box = draw.textbbox((0, layout["metric_y"]), "3D Dice 0.986", font=font, anchor="lt")
+                self.assertLess(metric_box[3], layout["header"])
+                # The CT image remains identical despite the larger text/header.
+                physical = renderer.physical_panel(renderer.blend_slice(case["ct"][1], None), [2, 1], pixels)
+                x = layout["gap"] + (pixels - physical.width) // 2
+                y = layout["header"] + (pixels - physical.height) // 2
+                np.testing.assert_array_equal(np.asarray(row.crop((x, y, x + physical.width, y + physical.height))),
+                                              np.asarray(physical))
 
 
 if __name__ == "__main__":
