@@ -114,7 +114,7 @@ def final(out):
     records=[read(e.record_path(out,t,v)) for t in tasks for v in VARIANTS]
     batch_controls=[audit_used_batch(out,e,protocol,digest,s,b) for s,b in sorted({(key(r['row'])[0],r['actual_frame_batch']) for r in records})]
     summary=summarize(records,tasks);merged=read(out/'merged_metrics.json')
-    if (merged.get('schema'),merged.get('protocol_sha256'),merged.get('task_count'),merged.get('controls_excluded'))!=('five_source_prompt_type_merged_v1',digest,519,True):
+    if (merged.get('schema'),merged.get('protocol_sha256'),merged.get('task_count'),merged.get('controls_excluded'))!=('five_source_prompt_type_merged_v2',digest,519,True):
         raise ValueError('merged scope/protocol binding mismatch')
     saved_rows=merged['per_case_class'];saved_index={(key(r),r['variant']):r for r in saved_rows}
     if len(saved_index)!=519 or len(saved_rows)!=519 or set(saved_index)!={(key(r['row']),r['variant']) for r in records}:
