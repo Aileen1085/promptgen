@@ -214,6 +214,22 @@ def available():
                    if int(free) >= MIN_GPU_MIB), reverse=True)
 
 
+def worker_runtime(method):
+    interpreters = {"segvol": ROOT / "segvol-3d/.venv/bin/python",
+                    "vista3d": ROOT / "vista3d/.venv-vista/bin/python"}
+    executable = interpreters.get(method, Path(sys.executable))
+    env = dict(os.environ)
+    if method == "pam":
+        dependency_path = ROOT / "third_party/PAM_official_20261010/python_deps"
+        paths = [str(dependency_path)]
+        if env.get("PYTHONPATH"):
+            paths.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(paths)
+    if not executable.is_file():
+        raise FileNotFoundError(executable)
+    return str(executable), env
+
+
 def schedule():
     import fcntl
 
@@ -238,9 +254,10 @@ def schedule():
                     if not pending or device in used:
                         continue
                     method = pending.pop(0)
-                    env = dict(os.environ, CUDA_VISIBLE_DEVICES=device)
+                    executable, env = worker_runtime(method)
+                    env["CUDA_VISIBLE_DEVICES"] = device
                     with (OUT / (method + ".log")).open("x") as log:
-                        process = subprocess.Popen([sys.executable, "-B", __file__, "worker", method, device],
+                        process = subprocess.Popen([executable, "-B", __file__, "worker", method, device],
                                                    cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
                     active[method] = process, device
             native.write(OUT / "status.json", dict(pending=pending, failed=failed,
