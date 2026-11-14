@@ -220,10 +220,10 @@ def worker_runtime(method):
     executable = interpreters.get(method, Path(sys.executable))
     env = dict(os.environ)
     if method == "pam":
-        dependency_path = ROOT / "third_party/PAM_official_20261010/python_deps"
-        paths = [str(dependency_path)]
-        if env.get("PYTHONPATH"):
-            paths.append(env["PYTHONPATH"])
+        dependency_path = str(ROOT / "third_party/PAM_official_20261010/python_deps")
+        paths = [entry for entry in env.get("PYTHONPATH", "").split(os.pathsep)
+                 if entry and entry != dependency_path]
+        paths.insert(0, dependency_path)
         env["PYTHONPATH"] = os.pathsep.join(paths)
     if not executable.is_file():
         raise FileNotFoundError(executable)
@@ -297,6 +297,9 @@ def main():
                 *_, audit = load_inputs(cases[case_id], ref)
                 print("FUMPE_GRID_OK", case_id, audit["shape_dhw"], audit["slices"], flush=True)
     elif args.command == "worker":
+        executable, env = worker_runtime(args.method)
+        if executable != sys.executable or env.get("PYTHONPATH") != os.environ.get("PYTHONPATH"):
+            os.execve(executable, [executable, "-B", __file__, "worker", args.method, args.uuid], env)
         worker(args.method, args.uuid)
     else:
         schedule()
