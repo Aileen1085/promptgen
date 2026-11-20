@@ -56,7 +56,7 @@ def select_tasks(rows):
     cases = sorted({row["case_id"] for row in amos})
     if len({native.key(row) for row in amos}) != len(amos):
         raise ValueError("duplicate fixed holdout task")
-    if len(cases) != 100 or len(amos) != 1485 or any(row["split_role"] != "val" for row in amos):
+    if len(cases) != 100 or len(amos) != 1485 or any(row["split_role"] != "validation" for row in amos):
         raise ValueError("expected the fixed AMOS holdout of 100 CTs and 1485 tasks")
     return sorted((row for row in amos if row["case_id"] in cases[:10]), key=native.key)
 
@@ -96,10 +96,19 @@ def background_supports(target, planes):
     return coronal_line, sagittal_line
 
 
-def sample_faces(supports, spacing, cap, sampler, minimum_mm):
+def face_coordinates(support, axis, index):
+    points = np.argwhere(np.take(support, index, axis=axis))
+    return np.insert(points, axis, index, axis=1)
+
+
+def sample_faces(supports, spacing, cap, sampler, minimum_mm, *, planes=None):
+    if planes is None:
+        coordinates = tuple(np.argwhere(support) for support in supports)
+    else:
+        coordinates = tuple(face_coordinates(support, axis, plane)
+                            for support, axis, plane in zip(supports, (2, 1), planes))
     selected = []
-    for support in supports:
-        candidates = np.argwhere(support)
+    for candidates in coordinates:
         if selected and len(selected[0]):
             previous = selected[0]
             distance = np.sum(((candidates[:, None] - previous) * spacing) ** 2, axis=2)
@@ -108,9 +117,10 @@ def sample_faces(supports, spacing, cap, sampler, minimum_mm):
     return tuple(selected)
 
 
-def points_digest(supports):
+def points_digest(supports, planes):
     # Preserve the original plane assignment even at the intersection.
-    coordinates = [np.argwhere(mask).astype("<i4").tolist() for mask in supports]
+    coordinates = [face_coordinates(mask, axis, plane).tolist()
+                   for mask, axis, plane in zip(supports, (2, 1), planes)]
     return sha256(json.dumps(coordinates, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -129,7 +139,7 @@ class Prompts:
 
     def points(self, role, cap, sampler="fps", minimum_mm=3.0):
         supports = {"fg": self.foreground, "bg": self.background}[role]
-        return sample_faces(supports, self.spacing, cap, sampler, minimum_mm)
+        return sample_faces(supports, self.spacing, cap, sampler, minimum_mm, planes=self.planes)
 
 
 def stat_identity(path):
@@ -178,13 +188,16 @@ class CaseLoader:
                               label=stat_identity(Path(task["label"])))
         target = self.labels == task["local_class_id"]
         for fg, axis, plane in zip(foreground, (2, 1), planes):
-            if fg.shape != target.shape or not fg.any() or np.any(fg & ~target):
+            if fg.shape != target.shape or not 0 <= plane < target.shape[axis]:
+                raise ValueError("cached foreground geometry does not match the target")
+            points = face_coordinates(fg, axis, plane)
+            if not len(points) or not target[tuple(points.T)].all():
                 raise ValueError("cached foreground is empty or does not align with the target")
-            if not np.all(np.argwhere(fg)[:, axis] == plane):
+            if np.count_nonzero(fg) != len(points):
                 raise ValueError("foreground is outside its original selected plane")
         background = background_supports(target, planes)
         return Prompts(self.ct, target, foreground, background, self.spacing, planes, cache_name,
-                       digest, ct_name, points_digest(background))
+                       digest, ct_name, points_digest(background, planes))
 
 
 def prompt_identity(prompts, file_stats):
