@@ -96,9 +96,7 @@ def stage_points(stage):
 
 def freeze_prompt(t, prompts, stages, cert):
     bounds = stages[0]['bounds_dhw']
-    frames = stage_points(stages[0]); expected_fg = {z:fg for z,fg,_ in frames if fg}
-    if any({z:fg for z,fg,_ in stage_points(stage) if fg}!=expected_fg for stage in stages):
-        raise ValueError('archived foreground coordinates varied across stages')
+    frames = stage_points(stages[0])
     bg_union = prompts.background[0] | prompts.background[1]
     pool_audit, plan, counts = [], [], Counter()
     for z,fg_xy,bg_yx in frames:
@@ -144,10 +142,6 @@ def prepare(cases):
                     or pairs['sam2'][0]['bounds_dhw']!=pairs['medsam2'][0]['bounds_dhw']):
                 raise ValueError('SAM2 and MedSAM2 archives do not share initial prompts')
             budget=freeze_prompt(t,prompts,pairs['sam2'],hashes)
-            fg=lambda stages: {z:p for z,p,_ in stage_points(stages[0]) if p}
-            ref=fg(pairs['sam2'])
-            if any({z:p for z,p,_ in stage_points(st) if p}!=ref for st in pairs['medsam2']):
-                raise ValueError('MedSAM2 archived FG changed between stages')
             tasks.append(dict(t,bg_budget=budget))
             print('MAGIC_BG_PREFLIGHT',t['case_id'],budget['counts'],flush=True)
     data=dict(inputs=frozen,cases=sorted(cases),tasks=tasks,methods={k:list(v) for k,v in ARMS.items()})
@@ -166,9 +160,42 @@ def audit_stage(stage, plan, cap, spacing):
     if got!=want or stage['background_points_encoded']!=sum(len(bg) for _,bg in want.values()):
         raise ValueError('native encoder submission differs from signed FG/BG coordinates')
     for fg,bg in got.values():
+        if len(fg)==2 and not separated(fg[0][::-1],fg[1][::-1],spacing):
+            raise ValueError('archived foreground points violate 3 mm spacing')
         for i,p in enumerate(bg):
             if not all(separated(p,q,spacing) for q in (*bg[i+1:],*((y,x) for x,y in fg))):
                 raise ValueError('actual points violate 3 mm spacing')
+
+
+def foreground_at_offset(mask, xy, y0, x0):
+    coords=np.asarray(xy,dtype=float).reshape(-1,2)-np.array([x0,y0])
+    if (len(coords)>2 or bool(len(coords))!=bool(mask.any()) or not np.all(coords==np.rint(coords))
+            or np.any(coords<0) or np.any(coords>=np.asarray(mask.shape)[::-1])
+            or not mask[tuple(coords[:,::-1].astype(int).T)].all()):
+        raise ValueError('archived foreground coordinate is not supported in the active ROI')
+    return coords.astype(np.float32)
+
+
+def predict_with_fixed_foreground(adapter, model, ct, mask, bg, spacing, bounds, args, plan):
+    depth,(y0,_),(x0,_)=bounds
+    wanted={z:fg for z,fg,_ in plan}
+    sequence,_=adapter.annotation_order(mask,bg,depth)
+    if sorted(sequence)!=sorted(wanted):
+        raise ValueError('registered foreground or background frames changed')
+    order=iter(sequence)
+    original=adapter.sample_scribble_points
+    def fixed(frame_mask, _spacing, cap, minimum):
+        if cap!=2 or minimum!=MIN_MM:
+            raise ValueError('unexpected sampling of frozen prompts')
+        return foreground_at_offset(frame_mask,wanted[next(order)],y0,x0)
+    adapter.sample_scribble_points=fixed
+    try:
+        result=adapter.predict_roi(model,ct,mask,bg,spacing,depth,args)
+        if next(order,None) is not None:
+            raise ValueError('native decoder did not register all frozen frames')
+        return result
+    finally:
+        adapter.sample_scribble_points=original
 
 
 class BudgetPredictor(OLD_PREDICTOR):
@@ -188,8 +215,8 @@ class BudgetPredictor(OLD_PREDICTOR):
             with torch.inference_mode(), torch.autocast('cuda',dtype=torch.bfloat16):
                 for _ in range(8):
                     depth,(y0,y1),(x0,x1)=bounds
-                    roi,st=self.adapter.predict_roi(self.model,prompts.ct[:,y0:y1,x0:x1],
-                        foreground[:,y0:y1,x0:x1],bg-np.array([0,y0,x0]),prompts.spacing,depth,args)
+                    roi,st=predict_with_fixed_foreground(self.adapter,self.model,prompts.ct[:,y0:y1,x0:x1],
+                        foreground[:,y0:y1,x0:x1],bg-np.array([0,y0,x0]),prompts.spacing,bounds,args,budget['frames'])
                     stage=dict(st,bounds_dhw=bounds)
                     audit_stage(stage,budget['frames'],cap,prompts.spacing[1:])
                     stages.append(stage)
