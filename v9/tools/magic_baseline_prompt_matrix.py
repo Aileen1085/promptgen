@@ -79,13 +79,30 @@ def box_digest(boxes):
     return hashlib.sha256(json.dumps(boxes, sort_keys=True).encode()).hexdigest()
 
 
+def load_case_ct(base, image, cache_path, raw_shape, source_affine, canonical, read_raw=None):
+    shape = tuple(image.shape[i] for i in (2, 0, 1))
+
+    def map_raw(raw):
+        if raw.shape != raw_shape or raw.dtype != np.float32:
+            raise ValueError('MAGIC case CT is not raw float32 on the prompt grid')
+        return base.reorient_grid(raw, source_affine, canonical, shape)
+
+    if cache_path.is_file():
+        return np.ascontiguousarray(map_raw(np.load(cache_path, mmap_mode='r', allow_pickle=False))), True
+    ct = np.ascontiguousarray(np.asarray(image.dataobj, dtype=np.float32).transpose(2, 0, 1))
+    if read_raw is not None and not np.array_equal(ct, map_raw(read_raw())):
+        raise ValueError('existing MAGIC NIfTI and physical raw CT differ for missing shared cache')
+    return ct, False
+
+
 class CaseLoader:
     """Map cached raw CT and tagged strokes to the existing MAGIC NIfTI scoring grid."""
 
-    def __init__(self):
+    def __init__(self, verify_fallback_ct=False):
         self.base = native.base_module()
         self.entries = {row['case_id']: row for row in native.read(matrix.SPLIT)['datasets']['magic']['val']}
         self.case = None
+        self.verify_fallback_ct = verify_fallback_ct
 
     def __call__(self, task):
         import SimpleITK as sitk
@@ -123,13 +140,13 @@ class CaseLoader:
             lps[:3, 3] = reader.GetOrigin()
             self.source_affine = np.diag([-1., -1., 1., 1.]) @ lps
             ct_path = native.CACHE / '_case_images_v1' / ct_name
-            raw = np.load(ct_path, mmap_mode='r', allow_pickle=False)
-            if raw.shape != shape or raw.dtype != np.float32:
-                raise ValueError('MAGIC shared CT is not raw float32 on the prompt grid')
-            self.ct = np.ascontiguousarray(self.base.reorient_grid(raw, self.source_affine, self.affine, self.target.shape))
+            read_raw = (lambda: sitk.GetArrayFromImage(sitk.ReadImage(str(raw_path), sitk.sitkFloat32)))
+            self.ct, cache_hit = load_case_ct(self.base, image, ct_path, shape, self.source_affine, self.affine,
+                                              read_raw if self.verify_fallback_ct else None)
             self.spacing = tuple(np.linalg.norm(self.affine[:3, :3], axis=0))
-            self.files = {k: matrix.stat_identity(p) for k, p in dict(ct=ct_path, image=image_path,
+            self.files = {k: matrix.stat_identity(p) for k, p in dict(ct=ct_path if cache_hit else image_path, image=image_path,
                           label=label_path, raw_geometry=raw_path).items()}
+            self.files['ct_source'] = 'shared_read_only' if cache_hit else 'existing_nifti_verified_against_raw'
             self.case = key
         foreground, planes = map_foreground(supports, raw_planes, self.source_affine, self.affine, self.target)
         background = matrix.background_supports(self.target, planes)
@@ -226,7 +243,7 @@ def prepare():
     old = [r for r in native.read(PAM_MAGIC)['per_case_class'] if r['source_name'] == 'magic' and r['method'] == 'dual_prob']
     native.validate_rows(old, tasks)
     old_boxes = {native.key(r): r['prompt_audit']['submission_sha256'] for r in old}
-    loader = CaseLoader()
+    loader = CaseLoader(verify_fallback_ct=True)
     for row in tasks:
         prompts = loader(row)
         if old_boxes[native.key(row)] != loader.files['pam_submission_sha256']:
