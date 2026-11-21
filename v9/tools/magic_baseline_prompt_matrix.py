@@ -79,6 +79,19 @@ def box_digest(boxes):
     return hashlib.sha256(json.dumps(boxes, sort_keys=True).encode()).hexdigest()
 
 
+def verify_archived_gt_boxes(target, boxes):
+    if tuple(b['plane'] for b in boxes) != PLANES:
+        raise ValueError('expected two archived orthogonal GT boxes')
+    planes = tuple(b['slice'] for b in boxes)
+    if any(type(index) is not int or not 0 <= index < target.shape[axis]
+           for index, axis in zip(planes, (2, 1), strict=True)):
+        raise ValueError('archived GT box slice outside the CT grid')
+    computed = gt_boxes(target, planes)
+    if box_digest(computed) != box_digest(boxes):
+        raise ValueError('archived GT box does not match independent 2D bounding box')
+    return computed
+
+
 def load_case_ct(base, image, cache_path, raw_shape, source_affine, canonical, read_raw=None):
     shape = tuple(image.shape[i] for i in (2, 0, 1))
 
@@ -150,14 +163,20 @@ class CaseLoader:
             self.case = key
         foreground, planes = map_foreground(supports, raw_planes, self.source_affine, self.affine, self.target)
         background = matrix.background_supports(self.target, planes)
-        self.files['pam_submission_sha256'] = box_digest(gt_boxes(self.target, planes))
+        boxes = verify_archived_gt_boxes(self.target, task['pam_boxes'])
+        self.files['pam_submission_sha256'] = box_digest(boxes)
         return matrix.Prompts(self.ct, self.target, foreground, background, self.spacing, planes, name,
                               native.sha(package_path), ct_name, matrix.points_digest(background, planes))
 
 
 class InteractivePredictor(NATIVE_INTERACTIVE):
-    def _evaluate_pam(self, prompts):
-        payload = gt_boxes(prompts.target, prompts.planes)
+    def evaluate(self, task, prompts):
+        if self.method == 'pam':
+            yield from self._evaluate_pam(prompts, task['pam_boxes'])
+        else:
+            yield from super().evaluate(task, prompts)
+
+    def _evaluate_pam(self, prompts, payload):
         scores, audits = self.fusion.predict(prompts.ct, prompts.spacing, payload, self.models)
         if (tuple(a['plane'] for a in audits) != PLANES or
                 any(a['box_decoder_calls'] != 1 or a['gt_mask_supplied'] for a in audits)):
@@ -242,17 +261,25 @@ def prepare():
     tasks = select_magic(native.read(matrix.SOURCE)['tasks'], native.read(matrix.SPLIT))
     old = [r for r in native.read(PAM_MAGIC)['per_case_class'] if r['source_name'] == 'magic' and r['method'] == 'dual_prob']
     native.validate_rows(old, tasks)
-    old_boxes = {native.key(r): r['prompt_audit']['submission_sha256'] for r in old}
+    old_prompts = {native.key(r): r['prompt_audit'] for r in old}
     loader = CaseLoader(verify_fallback_ct=True)
+    different_pam_slices = []
     for row in tasks:
+        original = old_prompts[native.key(row)]
+        if original['three_D_GT_ROI'] or not original['gt_used_only_for_selected_2D_box']:
+            raise ValueError(f'not an original two-dimensional PAM prompt for {native.key(row)}')
+        row['pam_boxes'] = original['boxes']
         prompts = loader(row)
-        if old_boxes[native.key(row)] != loader.files['pam_submission_sha256']:
+        if original['submission_sha256'] != loader.files['pam_submission_sha256']:
             raise ValueError(f'MAGIC PAM main-table box differs on {native.key(row)}')
+        if tuple(b['slice'] for b in row['pam_boxes']) != prompts.planes:
+            different_pam_slices.append(row['case_id'])
         row['prompt_identity'] = matrix.prompt_identity(prompts, loader.files)
         print('MAGIC_PREFLIGHT', row['case_id'], flush=True)
     if inputs != freeze_inputs():
         raise ValueError('MAGIC inputs changed while preparing')
     native.write(path, dict(inputs=inputs, tasks=tasks, cases=sorted(t['case_id'] for t in tasks),
+                 historical_pam_slices_differ_from_exact_scribble=different_pam_slices,
                  methods={m: list(a) for m, a in METHODS.items()},
                  groups={m: [list(a) for a in matrix.arm_groups(m)] for m in METHODS}))
     print('MAGIC_PREPARED 35 cases / 35 tasks / 37 arms / 1295 rows', flush=True)
@@ -289,7 +316,8 @@ def summary(payload):
             raise ValueError('incomplete MAGIC arm')
         report[method] = {arm: dict(tasks=35, averages={m: math.fsum(r[m] for r in rows) / 35 for m in native.METRICS})
                           for arm, rows in metrics.items()}
-    return dict(protocol_sha256=digest, cases=payload['cases'], methods=report, rows=1295)
+    return dict(protocol_sha256=digest, cases=payload['cases'], methods=report, rows=1295,
+                historical_pam_slices_differ_from_exact_scribble=payload['historical_pam_slices_differ_from_exact_scribble'])
 
 
 def merge(payload):
